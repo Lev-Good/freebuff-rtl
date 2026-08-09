@@ -99,6 +99,20 @@ function Resolve-Paths {
   return @{ Html = $htmlFile; Css = $cssFile; Assets = $assetsDir }
 }
 
+function Set-InjectedScript {
+  # Replaces (or inserts) the injected <script> block for $marker with the
+  # current contents of $file. Older injected copies (e.g. the pre-icon
+  # light-mode script) are swapped in place instead of being left stale.
+  # Returns the updated html.
+  param([string]$Html, [string]$Marker, [string]$File)
+  $js = [IO.File]::ReadAllText($File)
+  $pattern = '(?is)<script[^>]*>\s*/\* ' + [regex]::Escape($Marker) + '.*?</script>'
+  if ($Html -match $pattern) {
+    return [regex]::Replace($Html, $pattern, '<script>' + $js + '</script>')
+  }
+  return [regex]::Replace($Html, '(?i)(<head[^>]*>)', { param($x) $x.Groups[1].Value + '<script>' + $js + '</script>' })
+}
+
 function Invoke-Apply {
   $paths = Resolve-Paths
   if (-not $paths) {
@@ -137,6 +151,7 @@ function Invoke-Apply {
     exit 1
   }
   if (-not (Test-Path -LiteralPath $shimFile)) { Write-Out "Missing $shimFile"; exit 1 }
+  if (-not (Test-Path -LiteralPath $dirJsFile)) { Write-Out "Missing $dirJsFile"; exit 1 }
   $html = [IO.File]::ReadAllText($htmlFile)
   $changed = $false
 
@@ -150,23 +165,22 @@ function Invoke-Apply {
     Write-Out 'dir already set on the html tag.'
   }
 
-  if ($html -notmatch 'freebuff-rtl-dragfix') {
-    $shim = [IO.File]::ReadAllText($shimFile)
-    $html = [regex]::Replace($html, '(?i)(<head[^>]*>)', { param($x) $x.Groups[1].Value + '<script>' + $shim + '</script>' })
-    Write-Out 'Drag-direction shim injected into index.html.'
+  $before = $html
+  $html = Set-InjectedScript $html 'freebuff-rtl-dragfix' $shimFile
+  if ($html -ne $before) {
+    Write-Out 'Drag-direction shim injected/updated in index.html.'
     $changed = $true
   } else {
-    Write-Out 'Drag-direction shim already present.'
+    Write-Out 'Drag-direction shim already up to date.'
   }
 
-  if (-not (Test-Path -LiteralPath $dirJsFile)) { Write-Out "Missing $dirJsFile"; exit 1 }
-  if ($html -notmatch 'freebuff-rtl-dir') {
-    $dirJs = [IO.File]::ReadAllText($dirJsFile)
-    $html = [regex]::Replace($html, '(?i)(<head[^>]*>)', { param($x) $x.Groups[1].Value + '<script>' + $dirJs + '</script>' })
-    Write-Out 'RTL/LTR direction toggle injected into index.html.'
+  $before = $html
+  $html = Set-InjectedScript $html 'freebuff-rtl-dir' $dirJsFile
+  if ($html -ne $before) {
+    Write-Out 'RTL/LTR direction toggle injected/updated in index.html.'
     $changed = $true
   } else {
-    Write-Out 'RTL/LTR direction toggle already present.'
+    Write-Out 'RTL/LTR direction toggle already up to date.'
   }
 
   if ($changed) { [IO.File]::WriteAllText($htmlFile, $html) }
@@ -200,14 +214,14 @@ function Invoke-Revert {
     $html = [IO.File]::ReadAllText($htmlFile)
     $changed = $false
     if ($html -match 'freebuff-rtl-dragfix') {
-      $html = [regex]::Replace($html, '(?is)<script[^>]*>\s*/\* freebuff-rtl-dragfix \*/.*?</script>', '')
+      $html = [regex]::Replace($html, '(?is)<script[^>]*>\s*/\* freebuff-rtl-dragfix.*?</script>', '')
       Write-Out 'HTML: drag shim removed.'
       $changed = $true
     } else {
       Write-Out 'HTML: no drag shim - nothing to remove.'
     }
     if ($html -match 'freebuff-rtl-dir') {
-      $html = [regex]::Replace($html, '(?is)<script[^>]*>\s*/\* freebuff-rtl-dir \*/.*?</script>', '')
+      $html = [regex]::Replace($html, '(?is)<script[^>]*>\s*/\* freebuff-rtl-dir.*?</script>', '')
       Write-Out 'HTML: direction toggle removed.'
       $changed = $true
     } else {
@@ -269,13 +283,13 @@ function Invoke-ApplyLight {
   }
   if (-not (Test-Path -LiteralPath $lightJs)) { Write-Out "Missing $lightJs"; exit 1 }
   $html = [IO.File]::ReadAllText($htmlFile)
-  if ($html -notmatch 'freebuff-light') {
-    $js = [IO.File]::ReadAllText($lightJs)
-    $html = [regex]::Replace($html, '(?i)(<head[^>]*>)', { param($x) $x.Groups[1].Value + '<script>' + $js + '</script>' })
+  $before = $html
+  $html = Set-InjectedScript $html 'freebuff-light' $lightJs
+  if ($html -ne $before) {
     [IO.File]::WriteAllText($htmlFile, $html)
-    Write-Out 'Light-mode toggle injected into index.html.'
+    Write-Out 'Light-mode toggle injected/updated in index.html.'
   } else {
-    Write-Out 'Light-mode toggle already present.'
+    Write-Out 'Light-mode toggle already up to date.'
   }
 
   Write-Out 'Done. A sun/moon button appears at the bottom-right - click it to switch.'
@@ -305,7 +319,7 @@ function Invoke-RevertLight {
   if (Test-Path -LiteralPath $htmlFile) {
     $html = [IO.File]::ReadAllText($htmlFile)
     if ($html -match 'freebuff-light') {
-      $html = [regex]::Replace($html, '(?is)<script[^>]*>\s*/\* freebuff-light \*/.*?</script>', '')
+      $html = [regex]::Replace($html, '(?is)<script[^>]*>\s*/\* freebuff-light.*?</script>', '')
       [IO.File]::WriteAllText($htmlFile, $html)
       Write-Out 'HTML: light-mode toggle removed.'
     } else {

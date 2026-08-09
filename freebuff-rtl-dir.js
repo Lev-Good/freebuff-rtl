@@ -1,4 +1,4 @@
-/* freebuff-rtl-dir */
+/* freebuff-rtl-dir v1 */
 (function () {
   'use strict';
   var KEY = 'freebuff-rtl-dir';

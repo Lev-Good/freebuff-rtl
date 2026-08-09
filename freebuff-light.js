@@ -1,4 +1,4 @@
-/* freebuff-light */
+/* freebuff-light v2 */
 (function () {
   'use strict';
   var KEY = 'freebuff-light';

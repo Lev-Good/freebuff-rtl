@@ -189,11 +189,14 @@ while ($true) {
         # File touched — could be an update OR our own patch. Re-check markers.
         $htmlText = [IO.File]::ReadAllText($paths.Html)
         $cssText  = if ($paths.Css) { [IO.File]::ReadAllText($paths.Css) } else { '' }
-        $rtlOk   = $htmlText -match 'freebuff-rtl-dragfix' -and
-                   $htmlText -match 'freebuff-rtl-dir' -and
+        # Versioned markers: if an older injected copy survived (the engine
+        # only replaces when content differs), the version check fails and the
+        # patch re-runs, upgrading the stale script in place.
+        $rtlOk   = $htmlText -match 'freebuff-rtl-dragfix v1' -and
+                   $htmlText -match 'freebuff-rtl-dir v1' -and
                    $htmlText -match 'dir="rtl"' -and
                    $cssText -match '/\* ==== freebuff-rtl ==== \*/'
-        $lightOk = $htmlText -match 'freebuff-light' -and
+        $lightOk = $htmlText -match 'freebuff-light v2' -and
                    $cssText -match '/\* ==== freebuff-light ==== \*/'
         if (-not $rtlOk) {
           Write-Log 'update detected - re-applying RTL patch'
