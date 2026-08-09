@@ -47,3 +47,12 @@ html[data-theme="light"] {
 html[data-theme="light"] .tabbar {
   background: var(--surface-2);
 }
+
+/* The tab strip's scroll-edge gradients are hard-coded to a dark fade —
+   restyle them so they blend with the light surface instead. */
+html[data-theme="light"] .tabs-viewport:before {
+  background: linear-gradient(to right, var(--surface-2), transparent);
+}
+html[data-theme="light"] .tabs-viewport:after {
+  background: linear-gradient(to left, var(--surface-2), transparent);
+}

@@ -125,6 +125,15 @@ html[dir="rtl"] .tabbar {
   padding-right: 10px;
 }
 
+/* ---- account: keep the profile clear of the native window-controls overlay --
+   On RTL systems the OS-drawn titlebar overlay (close/min/max) sits at the
+   window's left edge, right where the mirrored flex flow would put the
+   account block - hiding it. order:-1 puts the account at the far RIGHT,
+   exactly where it sits in the stock LTR layout, away from the overlay. */
+html[dir="rtl"] .tabbar-account {
+  order: -1;
+}
+
 /* ---- explorer internals ---------------------------------------------------- */
 html[dir="rtl"] .explorer-header {
   padding-left: 8px;

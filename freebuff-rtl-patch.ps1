@@ -38,6 +38,7 @@ $ErrorActionPreference = 'Stop'
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $sheetFile = Join-Path $scriptDir 'freebuff-rtl.css'
 $shimFile  = Join-Path $scriptDir 'freebuff-rtl-dragfix.js'
+$dirJsFile = Join-Path $scriptDir 'freebuff-rtl-dir.js'
 $marker    = '/* ==== freebuff-rtl ==== */'
 $lightSheet   = Join-Path $scriptDir 'freebuff-light.css'
 $lightJs      = Join-Path $scriptDir 'freebuff-light.js'
@@ -120,7 +121,11 @@ function Invoke-Apply {
     if (-not (Test-Path -LiteralPath ($cssFile + '.pre-rtl.bak'))) {
       Copy-Item -LiteralPath $cssFile -Destination ($cssFile + '.pre-rtl.bak') -Force
     }
-    [IO.File]::WriteAllText($cssFile, $css.Substring(0, $i) + $sheet)
+    # Replace only the old RTL block - keep any blocks appended after it
+    # (e.g. the light-theme block) by splicing them back on.
+    $nextMarker = $css.IndexOf($lightMarker, $i + $marker.Length)
+    $suffix = if ($nextMarker -ge 0) { $css.Substring($nextMarker) } else { '' }
+    [IO.File]::WriteAllText($cssFile, $css.Substring(0, $i) + $sheet + $suffix)
     Write-Out 'CSS updated to the latest RTL sheet.'
   } else {
     Write-Out 'CSS already up to date.'
@@ -154,6 +159,16 @@ function Invoke-Apply {
     Write-Out 'Drag-direction shim already present.'
   }
 
+  if (-not (Test-Path -LiteralPath $dirJsFile)) { Write-Out "Missing $dirJsFile"; exit 1 }
+  if ($html -notmatch 'freebuff-rtl-dir') {
+    $dirJs = [IO.File]::ReadAllText($dirJsFile)
+    $html = [regex]::Replace($html, '(?i)(<head[^>]*>)', { param($x) $x.Groups[1].Value + '<script>' + $dirJs + '</script>' })
+    Write-Out 'RTL/LTR direction toggle injected into index.html.'
+    $changed = $true
+  } else {
+    Write-Out 'RTL/LTR direction toggle already present.'
+  }
+
   if ($changed) { [IO.File]::WriteAllText($htmlFile, $html) }
   Write-Out 'Done. Restart Freebuff - the chat is now right-to-left.'
   exit 0
@@ -168,13 +183,15 @@ function Invoke-Revert {
   $htmlFile = $paths.Html
   $cssFile  = $paths.Css
 
-  # --- 1) strip the RTL block from the CSS ---
+  # --- 1) strip the RTL block from the CSS (keep any blocks after it) ---
   $css = [IO.File]::ReadAllText($cssFile)
   $i = $css.IndexOf($marker)
   if ($i -lt 0) {
     Write-Out 'CSS: RTL was not applied - nothing to remove.'
   } else {
-    [IO.File]::WriteAllText($cssFile, $css.Substring(0, $i))
+    $nextMarker = $css.IndexOf($lightMarker, $i + $marker.Length)
+    $suffix = if ($nextMarker -ge 0) { $css.Substring($nextMarker) } else { '' }
+    [IO.File]::WriteAllText($cssFile, $css.Substring(0, $i) + $suffix)
     Write-Out 'CSS: RTL block removed.'
   }
 
@@ -188,6 +205,13 @@ function Invoke-Revert {
       $changed = $true
     } else {
       Write-Out 'HTML: no drag shim - nothing to remove.'
+    }
+    if ($html -match 'freebuff-rtl-dir') {
+      $html = [regex]::Replace($html, '(?is)<script[^>]*>\s*/\* freebuff-rtl-dir \*/.*?</script>', '')
+      Write-Out 'HTML: direction toggle removed.'
+      $changed = $true
+    } else {
+      Write-Out 'HTML: no direction toggle - nothing to remove.'
     }
     $m = [regex]::Match($html, '(?is)<html[^>]*>')
     if ($m.Success) {

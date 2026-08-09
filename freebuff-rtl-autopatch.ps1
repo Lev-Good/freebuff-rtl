@@ -190,6 +190,7 @@ while ($true) {
         $htmlText = [IO.File]::ReadAllText($paths.Html)
         $cssText  = if ($paths.Css) { [IO.File]::ReadAllText($paths.Css) } else { '' }
         $rtlOk   = $htmlText -match 'freebuff-rtl-dragfix' -and
+                   $htmlText -match 'freebuff-rtl-dir' -and
                    $htmlText -match 'dir="rtl"' -and
                    $cssText -match '/\* ==== freebuff-rtl ==== \*/'
         $lightOk = $htmlText -match 'freebuff-light' -and
