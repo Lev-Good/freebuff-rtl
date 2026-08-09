@@ -53,8 +53,10 @@ function Write-Log($msg) {
 }
 
 function Invoke-PatchOnce {
+  param([switch]$Light)
   try {
     $args = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $patchScript)
+    if ($Light) { $args += '-Light' }
     if ($UiDir) { $args += @('-CssDir', (Join-Path $UiDir 'assets')) }
     $out = & powershell @args 2>&1 | Out-String
     $ok = $LASTEXITCODE -eq 0
@@ -187,12 +189,18 @@ while ($true) {
         # File touched — could be an update OR our own patch. Re-check markers.
         $htmlText = [IO.File]::ReadAllText($paths.Html)
         $cssText  = if ($paths.Css) { [IO.File]::ReadAllText($paths.Css) } else { '' }
-        $patched = $htmlText -match 'freebuff-rtl-dragfix' -and
+        $rtlOk   = $htmlText -match 'freebuff-rtl-dragfix' -and
                    $htmlText -match 'dir="rtl"' -and
                    $cssText -match '/\* ==== freebuff-rtl ==== \*/'
-        if (-not $patched) {
+        $lightOk = $htmlText -match 'freebuff-light' -and
+                   $cssText -match '/\* ==== freebuff-light ==== \*/'
+        if (-not $rtlOk) {
           Write-Log 'update detected - re-applying RTL patch'
           [void](Invoke-PatchOnce)
+        }
+        if (-not $lightOk) {
+          Write-Log 'update detected - re-applying light-mode toggle'
+          [void](Invoke-PatchOnce -Light)
         }
       }
     }

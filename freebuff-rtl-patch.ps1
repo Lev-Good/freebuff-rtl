@@ -20,6 +20,8 @@
     powershell -File freebuff-rtl-patch.ps1 -InstallRoot "C:\path\to\@codebufffreebuff-desktop"
     powershell -File freebuff-rtl-patch.ps1 -CssDir "C:\...\ui\assets"   # legacy arg
     powershell -File freebuff-rtl-patch.ps1 -Revert   # uninstall the patch
+    powershell -File freebuff-rtl-patch.ps1 -Light          # add light-mode toggle (works with or without RTL)
+    powershell -File freebuff-rtl-patch.ps1 -RevertLight    # remove light-mode toggle
  ============================================================================
 #>
 [CmdletBinding()]
@@ -27,6 +29,8 @@ param(
   [string]$InstallRoot = '',
   [string]$CssDir = '',
   [switch]$Revert,
+  [switch]$Light,
+  [switch]$RevertLight,
   [switch]$Quiet
 )
 
@@ -35,6 +39,9 @@ $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $sheetFile = Join-Path $scriptDir 'freebuff-rtl.css'
 $shimFile  = Join-Path $scriptDir 'freebuff-rtl-dragfix.js'
 $marker    = '/* ==== freebuff-rtl ==== */'
+$lightSheet   = Join-Path $scriptDir 'freebuff-light.css'
+$lightJs      = Join-Path $scriptDir 'freebuff-light.js'
+$lightMarker  = '/* ==== freebuff-light ==== */'
 
 function Write-Out($msg) {
   if (-not $Quiet) { Write-Host "[Freebuff RTL] $msg" }
@@ -204,4 +211,91 @@ function Invoke-Revert {
   exit 0
 }
 
-if ($Revert) { Invoke-Revert } else { Invoke-Apply }
+function Invoke-ApplyLight {
+  $paths = Resolve-Paths
+  if (-not $paths) {
+    Write-Out "Could not find the Freebuff UI files. Pass -InstallRoot or -CssDir."
+    exit 1
+  }
+  $htmlFile = $paths.Html
+  $cssFile  = $paths.Css
+
+  # --- 1) CSS: append / refresh the light block -----------------------------
+  if (-not (Test-Path -LiteralPath $lightSheet)) { Write-Out "Missing $lightSheet"; exit 1 }
+  $sheet = [IO.File]::ReadAllText($lightSheet)
+  $css   = [IO.File]::ReadAllText($cssFile)
+  $i = $css.IndexOf($lightMarker)
+  if ($i -lt 0) {
+    if (-not (Test-Path -LiteralPath ($cssFile + '.pre-rtl.bak'))) {
+      Copy-Item -LiteralPath $cssFile -Destination ($cssFile + '.pre-rtl.bak') -Force
+    }
+    [IO.File]::WriteAllText($cssFile, $css + $sheet)
+    Write-Out "Light CSS patched: $([IO.Path]::GetFileName($cssFile))"
+  } elseif ($css.Substring($i) -ne $sheet) {
+    [IO.File]::WriteAllText($cssFile, $css.Substring(0, $i) + $sheet)
+    Write-Out 'Light CSS updated to the latest sheet.'
+  } else {
+    Write-Out 'Light CSS already up to date.'
+  }
+
+  # --- 2) index.html: inject the toggle button script -----------------------
+  if (-not (Test-Path -LiteralPath $htmlFile)) {
+    Write-Out "WARNING: $htmlFile not found - light-mode toggle was NOT set."
+    exit 1
+  }
+  if (-not (Test-Path -LiteralPath $lightJs)) { Write-Out "Missing $lightJs"; exit 1 }
+  $html = [IO.File]::ReadAllText($htmlFile)
+  if ($html -notmatch 'freebuff-light') {
+    $js = [IO.File]::ReadAllText($lightJs)
+    $html = [regex]::Replace($html, '(?i)(<head[^>]*>)', { param($x) $x.Groups[1].Value + '<script>' + $js + '</script>' })
+    [IO.File]::WriteAllText($htmlFile, $html)
+    Write-Out 'Light-mode toggle injected into index.html.'
+  } else {
+    Write-Out 'Light-mode toggle already present.'
+  }
+
+  Write-Out 'Done. A sun/moon button appears at the bottom-right - click it to switch.'
+  exit 0
+}
+
+function Invoke-RevertLight {
+  $paths = Resolve-Paths
+  if (-not $paths) {
+    Write-Out "Could not find the Freebuff UI files. Pass -InstallRoot or -CssDir."
+    exit 1
+  }
+  $htmlFile = $paths.Html
+  $cssFile  = $paths.Css
+
+  # --- 1) strip the light block from the CSS ---
+  $css = [IO.File]::ReadAllText($cssFile)
+  $i = $css.IndexOf($lightMarker)
+  if ($i -lt 0) {
+    Write-Out 'CSS: light theme was not applied - nothing to remove.'
+  } else {
+    [IO.File]::WriteAllText($cssFile, $css.Substring(0, $i))
+    Write-Out 'CSS: light block removed.'
+  }
+
+  # --- 2) remove the toggle script from index.html ---
+  if (Test-Path -LiteralPath $htmlFile) {
+    $html = [IO.File]::ReadAllText($htmlFile)
+    if ($html -match 'freebuff-light') {
+      $html = [regex]::Replace($html, '(?is)<script[^>]*>\s*/\* freebuff-light \*/.*?</script>', '')
+      [IO.File]::WriteAllText($htmlFile, $html)
+      Write-Out 'HTML: light-mode toggle removed.'
+    } else {
+      Write-Out 'HTML: no light-mode toggle - nothing to remove.'
+    }
+  } else {
+    Write-Out "HTML: $htmlFile not found - skipped."
+  }
+
+  Write-Out 'Done. The theme is back to the app default (dark).'
+  exit 0
+}
+
+if ($RevertLight) { Invoke-RevertLight }
+elseif ($Light) { Invoke-ApplyLight }
+elseif ($Revert) { Invoke-Revert }
+else { Invoke-Apply }

@@ -1,0 +1,49 @@
+/* ==== freebuff-light ==== */
+/* ==========================================================================
+   Freebuff Desktop — Light theme override (v1)
+   --------------------------------------------------------------------------
+   The app is hard-coded to dark mode (color-scheme: dark on :root). Nearly
+   every color in the UI flows through a handful of CSS custom properties
+   (--bg, --surface, --text, --border, ...), so a light theme is just a
+   palette swap. This sheet is gated on html[data-theme="light"], which is
+   set/removed by the freebuff-light.js toggle button.
+
+   Design decisions:
+   * The variables are re-defined with a neutral light palette. Everything
+     that uses var() — surfaces, text, borders, inputs, scrollbars, hovers —
+     flips automatically, no per-component rules needed.
+   * color-scheme: light makes native controls (scrollbars, form widgets,
+     autofill) render light too.
+   * The tabbar hard-codes a near-black background (#0a0a0b) instead of
+     using variables — it gets an explicit override.
+   * Code blocks (.md-code) and the terminal (xterm) intentionally STAY
+     dark: their syntax-highlight palettes are dark, so a light block
+     background would make the tokens unreadable. This matches how many
+     developer tools keep dark code surfaces.
+   ========================================================================== */
+
+html[data-theme="light"] {
+  color-scheme: light;
+
+  --bg: #f7f7f8;
+  --surface: #ffffff;
+  --surface-2: #f0f0f2;
+  --raised: #e6e6e9;
+  --border: #d6d6db;
+  --text: #1a1a1d;
+  --muted: #565660;
+  --faint: #8a8a93;
+  --brand: #17803c;
+  --brand-dim: #156a32;
+  --accent: #27272c;
+  --accent-dim: #6c6c75;
+  --premium: #b45309;
+  --green: #17803c;
+  --danger: #d42626;
+  --focus-ring: color-mix(in srgb, var(--accent) 55%, transparent);
+}
+
+/* The tabbar hard-codes a near-black surface — flip it to a light one. */
+html[data-theme="light"] .tabbar {
+  background: var(--surface-2);
+}
