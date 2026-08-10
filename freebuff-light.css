@@ -19,7 +19,9 @@
    * Code blocks (.md-code) and the terminal (xterm) intentionally STAY
      dark: their syntax-highlight palettes are dark, so a light block
      background would make the tokens unreadable. This matches how many
-     developer tools keep dark code surfaces.
+     developer tools keep dark code surfaces. The block's TEXT is pinned to
+     the dark-theme color below — without that it would inherit var(--text)
+     (near-black in light mode) and become invisible on the dark block.
    ========================================================================== */
 
 html[data-theme="light"] {
@@ -55,4 +57,20 @@ html[data-theme="light"] .tabs-viewport:before {
 }
 html[data-theme="light"] .tabs-viewport:after {
   background: linear-gradient(to left, var(--surface-2), transparent);
+}
+
+/* Code blocks keep their dark surface in light mode, but the code body
+   (.md-pre) sets no color — it inherits var(--text) from body, which flips
+   to near-black (#1a1a1d) and becomes unreadable on the dark block. Pin the
+   block's text, and the few diff-line colors that use variables, back to the
+   dark-theme values so code stays readable. */
+html[data-theme="light"] .md-code .md-pre,
+html[data-theme="light"] .md-code .md-pre code {
+  color: #e7e7e8; /* dark-theme --text */
+}
+html[data-theme="light"] .md-code .d-hunk {
+  color: #7c7c85; /* dark-theme --accent-dim */
+}
+html[data-theme="light"] .md-code .d-meta {
+  color: #6a6a70; /* dark-theme --faint */
 }

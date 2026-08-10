@@ -76,6 +76,15 @@ html[dir="rtl"] .prompt-rail {
   left: 12px;
   right: auto;
 }
+/* The model picker menu inside the composer is anchored to the trigger's
+   LEFT edge (base rule .composer-context .agent-menu { left: 0 }) and grows
+   rightward. In RTL the trigger mirrors to the row's right end, so the menu
+   extends past the window's right edge and gets clipped. Mirror the anchor
+   to the right edge so it grows leftward, into the window. */
+html[dir="rtl"] .composer-context .agent-menu {
+  left: auto;
+  right: 0;
+}
 
 /* ---- reserves: the space kept clear for those panels moves to the left --- */
 html[dir="rtl"] .thread-body {
@@ -202,6 +211,22 @@ html[data-theme="light"] .tabs-viewport:before {
 }
 html[data-theme="light"] .tabs-viewport:after {
   background: linear-gradient(to left, var(--surface-2), transparent);
+}
+
+/* Code blocks keep their dark surface in light mode, but the code body
+   (.md-pre) sets no color — it inherits var(--text) from body, which flips
+   to near-black (#1a1a1d) and becomes unreadable on the dark block. Pin the
+   block's text, and the few diff-line colors that use variables, back to the
+   dark-theme values so code stays readable. */
+html[data-theme="light"] .md-code .md-pre,
+html[data-theme="light"] .md-code .md-pre code {
+  color: #e7e7e8; /* dark-theme --text */
+}
+html[data-theme="light"] .md-code .d-hunk {
+  color: #7c7c85; /* dark-theme --accent-dim */
+}
+html[data-theme="light"] .md-code .d-meta {
+  color: #6a6a70; /* dark-theme --faint */
 }
 `;
 

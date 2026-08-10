@@ -55,6 +55,15 @@ html[dir="rtl"] .prompt-rail {
   left: 12px;
   right: auto;
 }
+/* The model picker menu inside the composer is anchored to the trigger's
+   LEFT edge (base rule .composer-context .agent-menu { left: 0 }) and grows
+   rightward. In RTL the trigger mirrors to the row's right end, so the menu
+   extends past the window's right edge and gets clipped. Mirror the anchor
+   to the right edge so it grows leftward, into the window. */
+html[dir="rtl"] .composer-context .agent-menu {
+  left: auto;
+  right: 0;
+}
 
 /* ---- reserves: the space kept clear for those panels moves to the left --- */
 html[dir="rtl"] .thread-body {
