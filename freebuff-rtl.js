@@ -1,10 +1,9 @@
 /* ==========================================================================
- * Freebuff Desktop — RTL + light-mode injection script (v4)
+ * Freebuff Desktop — RTL injection script (v5)
  * --------------------------------------------------------------------------
- * Sets <html dir="rtl">, injects the RTL override stylesheet, installs the
- * drag-direction shim (see freebuff-rtl-dragfix.js) that reverses the
- * explorer resize drag for the mirrored layout, and adds the light-mode
- * palette + sun/moon toggle button (see freebuff-light.css/js).
+ * Sets <html dir="rtl">, injects the RTL override stylesheet, and installs
+ * the drag-direction shim (see freebuff-rtl-dragfix.js) that reverses the
+ * explorer resize drag for the mirrored layout.
  *
  * Use it three ways:
  *   1. DevTools console (instant):  open DevTools (Ctrl+Shift+I), paste the
@@ -14,6 +13,9 @@
  *   3. Any browser tab pointed at the app's local URL — same effect.
  *
  * Safe to run more than once (idempotent): it checks for the style tag.
+ *
+ * Note: the light palette and sun/moon toggle used to be part of this script;
+ * Freebuff now ships its own official light/dark toggle, so they were removed.
  * ========================================================================== */
 (function () {
   'use strict';
@@ -183,51 +185,6 @@ html[dir="rtl"] .xterm {
   unicode-bidi: isolate;
 }
 
-/* ---- light theme (see freebuff-light.css) -------------------------------- */
-html[data-theme="light"] {
-  color-scheme: light;
-  --bg: #f7f7f8;
-  --surface: #ffffff;
-  --surface-2: #f0f0f2;
-  --raised: #e6e6e9;
-  --border: #d6d6db;
-  --text: #1a1a1d;
-  --muted: #565660;
-  --faint: #8a8a93;
-  --brand: #17803c;
-  --brand-dim: #156a32;
-  --accent: #27272c;
-  --accent-dim: #6c6c75;
-  --premium: #b45309;
-  --green: #17803c;
-  --danger: #d42626;
-  --focus-ring: color-mix(in srgb, var(--accent) 55%, transparent);
-}
-html[data-theme="light"] .tabbar {
-  background: var(--surface-2);
-}
-html[data-theme="light"] .tabs-viewport:before {
-  background: linear-gradient(to right, var(--surface-2), transparent);
-}
-html[data-theme="light"] .tabs-viewport:after {
-  background: linear-gradient(to left, var(--surface-2), transparent);
-}
-
-/* Code blocks keep their dark surface in light mode, but the code body
-   (.md-pre) sets no color — it inherits var(--text) from body, which flips
-   to near-black (#1a1a1d) and becomes unreadable on the dark block. Pin the
-   block's text, and the few diff-line colors that use variables, back to the
-   dark-theme values so code stays readable. */
-html[data-theme="light"] .md-code .md-pre,
-html[data-theme="light"] .md-code .md-pre code {
-  color: #e7e7e8; /* dark-theme --text */
-}
-html[data-theme="light"] .md-code .d-hunk {
-  color: #7c7c85; /* dark-theme --accent-dim */
-}
-html[data-theme="light"] .md-code .d-meta {
-  color: #6a6a70; /* dark-theme --faint */
-}
 `;
 
   function apply() {
@@ -273,60 +230,6 @@ html[data-theme="light"] .md-code .d-meta {
 }();
 
 /* ==========================================================================
- * Light-mode toggle — see freebuff-light.js for the explanation.
- * ========================================================================== */
-(function () {
-  'use strict';
-  var KEY = 'freebuff-light';
-  var root = document.documentElement;
-  var cur = null;
-  try { cur = localStorage.getItem(KEY) === '1'; } catch (e) {}
-  var ICON_SUN = '<svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>';
-  var ICON_MOON = '<svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>';
-  function paintOverlay() {
-    try {
-      if (navigator.windowControlsOverlay && navigator.windowControlsOverlay.setTitleBarOverlay) {
-        navigator.windowControlsOverlay.setTitleBarOverlay(
-          cur ? { color: '#f0f0f2', symbolColor: '#3a3a40' } : { color: '#0a0a0b', symbolColor: '#9a9aa0' }
-        );
-      }
-    } catch (e) {}
-  }
-  function paint() {
-    if (cur) { root.setAttribute('data-theme', 'light'); }
-    else { root.removeAttribute('data-theme'); }
-    paintOverlay();
-  }
-  paint();
-  function mount() {
-    var btn = document.createElement('button');
-    btn.id = 'freebuff-light-toggle';
-    btn.title = 'Toggle light / dark mode';
-    btn.setAttribute('aria-label', 'Toggle light / dark mode');
-    btn.innerHTML = cur ? ICON_MOON : ICON_SUN;
-    btn.style.cssText =
-      'position:fixed;right:16px;bottom:16px;z-index:2147483647;' +
-      'width:36px;height:36px;border-radius:50%;' +
-      'border:1px solid var(--border,#2a2a2e);' +
-      'background:var(--raised,#232327);color:var(--text,#e7e7e8);' +
-      'cursor:pointer;display:flex;align-items:center;justify-content:center;' +
-      'box-shadow:0 2px 12px rgba(0,0,0,.28);' +
-      'opacity:.8;transition:opacity .15s;';
-    btn.addEventListener('mouseenter', function () { btn.style.opacity = '1'; });
-    btn.addEventListener('mouseleave', function () { btn.style.opacity = '.8'; });
-    btn.addEventListener('click', function () {
-      cur = !cur;
-      paint();
-      try { localStorage.setItem(KEY, cur ? '1' : '0'); } catch (e) {}
-      btn.innerHTML = cur ? ICON_MOON : ICON_SUN;
-    });
-    (document.body || root).appendChild(btn);
-  }
-  if (document.body) { mount(); }
-  else { document.addEventListener('DOMContentLoaded', mount); }
-})();
-
-/* ==========================================================================
  * RTL/LTR direction toggle — see freebuff-rtl-dir.js for the explanation.
  * ========================================================================== */
 (function () {
@@ -350,7 +253,7 @@ html[data-theme="light"] .md-code .d-meta {
     btn.setAttribute('aria-label', 'Toggle text direction (RTL / LTR)');
     btn.textContent = rtl ? 'RTL' : 'LTR';
     btn.style.cssText =
-      'position:fixed;right:16px;bottom:60px;z-index:2147483647;' +
+      'position:fixed;right:16px;bottom:16px;z-index:2147483647;' +
       'height:36px;min-width:44px;padding:0 10px;border-radius:18px;' +
       'border:1px solid var(--border,#2a2a2e);' +
       'background:var(--raised,#232327);color:var(--text,#e7e7e8);' +

@@ -1,4 +1,4 @@
-/* freebuff-rtl-dir v1 */
+/* freebuff-rtl-dir v2 */
 (function () {
   'use strict';
   var KEY = 'freebuff-rtl-dir';
@@ -25,7 +25,7 @@
     btn.setAttribute('aria-label', 'Toggle text direction (RTL / LTR)');
     btn.textContent = rtl ? 'RTL' : 'LTR';
     btn.style.cssText =
-      'position:fixed;right:16px;bottom:60px;z-index:2147483647;' +
+      'position:fixed;right:16px;bottom:16px;z-index:2147483647;' +
       'height:36px;min-width:44px;padding:0 10px;border-radius:18px;' +
       'border:1px solid var(--border,#2a2a2e);' +
       'background:var(--raised,#232327);color:var(--text,#e7e7e8);' +

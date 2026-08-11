@@ -53,10 +53,8 @@ function Write-Log($msg) {
 }
 
 function Invoke-PatchOnce {
-  param([switch]$Light)
   try {
     $args = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $patchScript)
-    if ($Light) { $args += '-Light' }
     if ($UiDir) { $args += @('-CssDir', (Join-Path $UiDir 'assets')) }
     $out = & powershell @args 2>&1 | Out-String
     $ok = $LASTEXITCODE -eq 0
@@ -193,18 +191,21 @@ while ($true) {
         # only replaces when content differs), the version check fails and the
         # patch re-runs, upgrading the stale script in place.
         $rtlOk   = $htmlText -match 'freebuff-rtl-dragfix v1' -and
-                   $htmlText -match 'freebuff-rtl-dir v1' -and
+                   $htmlText -match 'freebuff-rtl-dir v2' -and
                    $htmlText -match 'dir="rtl"' -and
                    $cssText -match '/\* ==== freebuff-rtl ==== \*/'
-        $lightOk = $htmlText -match 'freebuff-light v2' -and
-                   $cssText -match '/\* ==== freebuff-light ==== \*/'
+        # Light/dark mode is built into Freebuff now - if a previous version
+        # of the script left its toggle behind, strip it (applying the patch
+        # removes light artifacts as part of the job).
+        $lightLeft = $htmlText -match 'freebuff-light' -or
+                     $cssText -match '/\* ==== freebuff-light ==== \*/'
         if (-not $rtlOk) {
           Write-Log 'update detected - re-applying RTL patch'
           [void](Invoke-PatchOnce)
         }
-        if (-not $lightOk) {
-          Write-Log 'update detected - re-applying light-mode toggle'
-          [void](Invoke-PatchOnce -Light)
+        if ($lightLeft) {
+          Write-Log 'legacy light-mode toggle detected - removing it (built into Freebuff now)'
+          [void](Invoke-PatchOnce)
         }
       }
     }

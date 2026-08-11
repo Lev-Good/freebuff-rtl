@@ -20,8 +20,10 @@
     powershell -File freebuff-rtl-patch.ps1 -InstallRoot "C:\path\to\@codebufffreebuff-desktop"
     powershell -File freebuff-rtl-patch.ps1 -CssDir "C:\...\ui\assets"   # legacy arg
     powershell -File freebuff-rtl-patch.ps1 -Revert   # uninstall the patch
-    powershell -File freebuff-rtl-patch.ps1 -Light          # add light-mode toggle (works with or without RTL)
-    powershell -File freebuff-rtl-patch.ps1 -RevertLight    # remove light-mode toggle
+
+  Note: light/dark mode is built into Freebuff now, so the engine no longer
+  installs a toggle — instead, applying (or reverting) also strips any
+  light-mode artifacts a previous version of this script left behind.
  ============================================================================
 #>
 [CmdletBinding()]
@@ -29,8 +31,6 @@ param(
   [string]$InstallRoot = '',
   [string]$CssDir = '',
   [switch]$Revert,
-  [switch]$Light,
-  [switch]$RevertLight,
   [switch]$Quiet
 )
 
@@ -40,8 +40,9 @@ $sheetFile = Join-Path $scriptDir 'freebuff-rtl.css'
 $shimFile  = Join-Path $scriptDir 'freebuff-rtl-dragfix.js'
 $dirJsFile = Join-Path $scriptDir 'freebuff-rtl-dir.js'
 $marker    = '/* ==== freebuff-rtl ==== */'
-$lightSheet   = Join-Path $scriptDir 'freebuff-light.css'
-$lightJs      = Join-Path $scriptDir 'freebuff-light.js'
+# Light/dark mode is built into Freebuff now. The marker below is kept only
+# so the engine can detect and strip a light-mode block that a previous
+# version of this script installed.
 $lightMarker  = '/* ==== freebuff-light ==== */'
 
 function Write-Out($msg) {
@@ -101,8 +102,8 @@ function Resolve-Paths {
 
 function Set-InjectedScript {
   # Replaces (or inserts) the injected <script> block for $marker with the
-  # current contents of $file. Older injected copies (e.g. the pre-icon
-  # light-mode script) are swapped in place instead of being left stale.
+  # current contents of $file. Older injected copies (e.g. from a previous
+  # drag-shim version) are swapped in place instead of being left stale.
   # Returns the updated html.
   param([string]$Html, [string]$Marker, [string]$File)
   $js = [IO.File]::ReadAllText($File)
@@ -122,10 +123,20 @@ function Invoke-Apply {
   $htmlFile = $paths.Html
   $cssFile  = $paths.Css
 
-  # --- 1) CSS ---------------------------------------------------------------
+  # --- 1) CSS: strip any leftover light-mode block, then apply RTL -----------
   if (-not (Test-Path -LiteralPath $sheetFile)) { Write-Out "Missing $sheetFile"; exit 1 }
   $sheet = [IO.File]::ReadAllText($sheetFile)
   $css   = [IO.File]::ReadAllText($cssFile)
+
+  # Light/dark mode is built into Freebuff now - remove the old palette block
+  # from a previous install before touching the RTL block.
+  $lightAt = $css.IndexOf($lightMarker)
+  if ($lightAt -ge 0) {
+    $css = $css.Substring(0, $lightAt)
+    [IO.File]::WriteAllText($cssFile, $css)
+    Write-Out 'CSS: removed the old light-mode palette (built into Freebuff now).'
+  }
+
   $i = $css.IndexOf($marker)
   if ($i -lt 0) {
     Copy-Item -LiteralPath $cssFile -Destination ($cssFile + '.pre-rtl.bak') -Force
@@ -135,11 +146,7 @@ function Invoke-Apply {
     if (-not (Test-Path -LiteralPath ($cssFile + '.pre-rtl.bak'))) {
       Copy-Item -LiteralPath $cssFile -Destination ($cssFile + '.pre-rtl.bak') -Force
     }
-    # Replace only the old RTL block - keep any blocks appended after it
-    # (e.g. the light-theme block) by splicing them back on.
-    $nextMarker = $css.IndexOf($lightMarker, $i + $marker.Length)
-    $suffix = if ($nextMarker -ge 0) { $css.Substring($nextMarker) } else { '' }
-    [IO.File]::WriteAllText($cssFile, $css.Substring(0, $i) + $sheet + $suffix)
+    [IO.File]::WriteAllText($cssFile, $css.Substring(0, $i) + $sheet)
     Write-Out 'CSS updated to the latest RTL sheet.'
   } else {
     Write-Out 'CSS already up to date.'
@@ -183,6 +190,14 @@ function Invoke-Apply {
     Write-Out 'RTL/LTR direction toggle already up to date.'
   }
 
+  # Strip the old light-mode toggle script from a previous install - light/
+  # dark mode is built into Freebuff now.
+  if ($html -match 'freebuff-light') {
+    $html = [regex]::Replace($html, '(?is)<script[^>]*>\s*/\* freebuff-light.*?</script>', '')
+    Write-Out 'HTML: removed the old light-mode toggle (built into Freebuff now).'
+    $changed = $true
+  }
+
   if ($changed) { [IO.File]::WriteAllText($htmlFile, $html) }
   Write-Out 'Done. Restart Freebuff - the chat is now right-to-left.'
   exit 0
@@ -197,17 +212,26 @@ function Invoke-Revert {
   $htmlFile = $paths.Html
   $cssFile  = $paths.Css
 
-  # --- 1) strip the RTL block from the CSS (keep any blocks after it) ---
+  # --- 1) strip the light-mode and RTL blocks from the CSS ---
   $css = [IO.File]::ReadAllText($cssFile)
+  $changedCss = $false
+  $lightAt = $css.IndexOf($lightMarker)
+  if ($lightAt -ge 0) {
+    $css = $css.Substring(0, $lightAt)
+    $changedCss = $true
+    Write-Out 'CSS: light-mode block removed.'
+  } else {
+    Write-Out 'CSS: no light-mode block - nothing to remove.'
+  }
   $i = $css.IndexOf($marker)
   if ($i -lt 0) {
     Write-Out 'CSS: RTL was not applied - nothing to remove.'
   } else {
-    $nextMarker = $css.IndexOf($lightMarker, $i + $marker.Length)
-    $suffix = if ($nextMarker -ge 0) { $css.Substring($nextMarker) } else { '' }
-    [IO.File]::WriteAllText($cssFile, $css.Substring(0, $i) + $suffix)
+    $css = $css.Substring(0, $i)
+    $changedCss = $true
     Write-Out 'CSS: RTL block removed.'
   }
+  if ($changedCss) { [IO.File]::WriteAllText($cssFile, $css) }
 
   # --- 2) remove the drag shim + dir from index.html ---
   if (Test-Path -LiteralPath $htmlFile) {
@@ -226,6 +250,13 @@ function Invoke-Revert {
       $changed = $true
     } else {
       Write-Out 'HTML: no direction toggle - nothing to remove.'
+    }
+    if ($html -match 'freebuff-light') {
+      $html = [regex]::Replace($html, '(?is)<script[^>]*>\s*/\* freebuff-light.*?</script>', '')
+      Write-Out 'HTML: light-mode toggle removed.'
+      $changed = $true
+    } else {
+      Write-Out 'HTML: no light-mode toggle - nothing to remove.'
     }
     $m = [regex]::Match($html, '(?is)<html[^>]*>')
     if ($m.Success) {
@@ -249,91 +280,5 @@ function Invoke-Revert {
   exit 0
 }
 
-function Invoke-ApplyLight {
-  $paths = Resolve-Paths
-  if (-not $paths) {
-    Write-Out "Could not find the Freebuff UI files. Pass -InstallRoot or -CssDir."
-    exit 1
-  }
-  $htmlFile = $paths.Html
-  $cssFile  = $paths.Css
-
-  # --- 1) CSS: append / refresh the light block -----------------------------
-  if (-not (Test-Path -LiteralPath $lightSheet)) { Write-Out "Missing $lightSheet"; exit 1 }
-  $sheet = [IO.File]::ReadAllText($lightSheet)
-  $css   = [IO.File]::ReadAllText($cssFile)
-  $i = $css.IndexOf($lightMarker)
-  if ($i -lt 0) {
-    if (-not (Test-Path -LiteralPath ($cssFile + '.pre-rtl.bak'))) {
-      Copy-Item -LiteralPath $cssFile -Destination ($cssFile + '.pre-rtl.bak') -Force
-    }
-    [IO.File]::WriteAllText($cssFile, $css + $sheet)
-    Write-Out "Light CSS patched: $([IO.Path]::GetFileName($cssFile))"
-  } elseif ($css.Substring($i) -ne $sheet) {
-    [IO.File]::WriteAllText($cssFile, $css.Substring(0, $i) + $sheet)
-    Write-Out 'Light CSS updated to the latest sheet.'
-  } else {
-    Write-Out 'Light CSS already up to date.'
-  }
-
-  # --- 2) index.html: inject the toggle button script -----------------------
-  if (-not (Test-Path -LiteralPath $htmlFile)) {
-    Write-Out "WARNING: $htmlFile not found - light-mode toggle was NOT set."
-    exit 1
-  }
-  if (-not (Test-Path -LiteralPath $lightJs)) { Write-Out "Missing $lightJs"; exit 1 }
-  $html = [IO.File]::ReadAllText($htmlFile)
-  $before = $html
-  $html = Set-InjectedScript $html 'freebuff-light' $lightJs
-  if ($html -ne $before) {
-    [IO.File]::WriteAllText($htmlFile, $html)
-    Write-Out 'Light-mode toggle injected/updated in index.html.'
-  } else {
-    Write-Out 'Light-mode toggle already up to date.'
-  }
-
-  Write-Out 'Done. A sun/moon button appears at the bottom-right - click it to switch.'
-  exit 0
-}
-
-function Invoke-RevertLight {
-  $paths = Resolve-Paths
-  if (-not $paths) {
-    Write-Out "Could not find the Freebuff UI files. Pass -InstallRoot or -CssDir."
-    exit 1
-  }
-  $htmlFile = $paths.Html
-  $cssFile  = $paths.Css
-
-  # --- 1) strip the light block from the CSS ---
-  $css = [IO.File]::ReadAllText($cssFile)
-  $i = $css.IndexOf($lightMarker)
-  if ($i -lt 0) {
-    Write-Out 'CSS: light theme was not applied - nothing to remove.'
-  } else {
-    [IO.File]::WriteAllText($cssFile, $css.Substring(0, $i))
-    Write-Out 'CSS: light block removed.'
-  }
-
-  # --- 2) remove the toggle script from index.html ---
-  if (Test-Path -LiteralPath $htmlFile) {
-    $html = [IO.File]::ReadAllText($htmlFile)
-    if ($html -match 'freebuff-light') {
-      $html = [regex]::Replace($html, '(?is)<script[^>]*>\s*/\* freebuff-light.*?</script>', '')
-      [IO.File]::WriteAllText($htmlFile, $html)
-      Write-Out 'HTML: light-mode toggle removed.'
-    } else {
-      Write-Out 'HTML: no light-mode toggle - nothing to remove.'
-    }
-  } else {
-    Write-Out "HTML: $htmlFile not found - skipped."
-  }
-
-  Write-Out 'Done. The theme is back to the app default (dark).'
-  exit 0
-}
-
-if ($RevertLight) { Invoke-RevertLight }
-elseif ($Light) { Invoke-ApplyLight }
-elseif ($Revert) { Invoke-Revert }
+if ($Revert) { Invoke-Revert }
 else { Invoke-Apply }
