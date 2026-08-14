@@ -90,6 +90,17 @@ html[dir="rtl"] .composer-context .agent-menu {
   right: 0;
 }
 
+/* ---- assistant feedback: keep the action on the physical left ------------ */
+/* In the stock LTR layout Give feedback is the leftmost footer action. The
+   RTL flex row mirrors it to the right, where it collides with the direction
+   toggle and the model picker. Restore its physical left-edge position while
+   leaving the rest of the message footer RTL. */
+html[dir="rtl"] .msg-footer .msg-feedback {
+  order: 2;
+  margin-inline-start: auto;
+  direction: ltr;
+}
+
 /* ---- reserves: the space kept clear for those panels moves to the left --- */
 html[dir="rtl"] .thread-body {
   padding-left: var(--explorer-reserve);
@@ -286,7 +297,7 @@ html[dir="rtl"] .xterm {
 (function () {
   'use strict';
 
-  var VERSION = '1.4.0';
+  var VERSION = '1.4.1';
   var REPO = 'Lev-Good/freebuff-rtl';
   var API_URL = 'https://api.github.com/repos/' + REPO + '/releases/latest';
   var RELEASE_BASE = 'https://github.com/' + REPO + '/releases/tag/';

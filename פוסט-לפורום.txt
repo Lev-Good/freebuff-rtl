@@ -12,6 +12,7 @@
 - תיקון כיוון גרירת ידית הגודל (ב-RTL צריך למשוך לכיוון ההפוך)
 - מתג כיוון RTL/LTR — לחיצה אחת כשכותבים באנגלית
 - תיקון מיקום פרופיל המשתמש שהוסתר מתחת לכפתורי החלון
+- תיקון מיקום כפתור `Give feedback` לצד שמאל, כדי שלא יתנגש עם מתג הכיוון ובורר המודלים
 - עדכון אוטומטי של הסקריפט עצמו: כשיצאה גרסה חדשה מוקפצת הודעה בתוך
   Freebuff עם כפתור שמעדכן, סוגר את התוכנה ומפעיל אותה מחדש עם הגרסה
   החדשה — ומוחק את קבצי הגרסה הישנה
@@ -32,8 +33,8 @@ apply-rtl.bat מנקה את שאריותיו.)
 מריצים פעם אחת, ושוכחים מזה.
 
 הורדה
-- דף המהדורה: https://github.com/Lev-Good/freebuff-rtl/releases/tag/v1.4.0
-- קובץ ZIP ישיר: https://github.com/Lev-Good/freebuff-rtl/archive/refs/tags/v1.4.0.zip
+- דף המהדורה: https://github.com/Lev-Good/freebuff-rtl/releases/tag/v1.4.1
+- קובץ ZIP ישיר: https://github.com/Lev-Good/freebuff-rtl/archive/refs/tags/v1.4.1.zip
 
 רוצים לחזור למקור? remove-rtl.bat (בחזרה ל-LTR) — הכל ניתן להסרה מלאה,
 עם גיבוי לפני כל שינוי.
