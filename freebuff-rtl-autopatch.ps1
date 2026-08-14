@@ -6,21 +6,30 @@
   updates. Freebuff updates replace the UI files and wipe the patch; this
   keeper detects the replacement within seconds and re-applies it.
 
-  How it works:
-    * Polls the installed index.html / stylesheet for the RTL markers every
-      3 seconds (cheap mtime comparison, no heavy I/O).
-    * If the markers are missing (fresh update), runs freebuff-rtl-patch.ps1
-      to re-apply CSS + dir="rtl" + drag shim.
-    * Also re-applies once on start, in case it was launched manually.
+  Since v1.4.0 the keeper also keeps the RTL script itself up to date:
+
+    * Every few hours (and once at start) it asks GitHub for the latest
+      release of Lev-Good/freebuff-rtl. If a newer version exists it
+      downloads the zip, replaces the old script files (deleting leftovers
+      of previous versions), re-registers autostart and re-applies the patch
+      to the installed Freebuff files - all in the background, no clicks.
+
+    * It watches %TEMP%\freebuff-desktop-pastes\ for the small *.rtlupdate
+      marker the in-app "Update & relaunch" button writes. When one arrives
+      it forces an update check now, waits for Freebuff to exit and starts
+      it again - so the button can close the app, get the new script
+      installed and bring the app back, all automatically.
 
   Modes:
     powershell -File freebuff-rtl-autopatch.ps1             # run keeper (foreground)
-    powershell -File freebuff-rtl-autopatch.ps1 -Install    # register scheduled task + start
-    powershell -File freebuff-rtl-autopatch.ps1 -Remove     # unregister scheduled task
-    powershell -File freebuff-rtl-autopatch.ps1 -Once       # apply once, exit (for install-permanent.bat)
+    powershell -File freebuff-rtl-autopatch.ps1 -Install    # register autostart + start
+    powershell -File freebuff-rtl-autopatch.ps1 -Remove     # unregister autostart
+    powershell -File freebuff-rtl-autopatch.ps1 -Once       # apply once, exit
+    powershell -File freebuff-rtl-autopatch.ps1 -CheckUpdates  # self-update once, exit
 
-  The scheduled task is registered per-user and runs at every logon, hidden,
-  with no admin rights required (the app lives under %LOCALAPPDATA%).
+  The autostart entry is registered per-user (HKCU Run key) and runs at every
+  logon, hidden, with no admin rights required (the app lives under
+  %LOCALAPPDATA%).
  ============================================================================
 #>
 [CmdletBinding()]
@@ -28,17 +37,36 @@ param(
   [switch]$Install,
   [switch]$Remove,
   [switch]$Once,
+  [switch]$CheckUpdates,
   [int]$PollSeconds = 3,
   [string]$UiDir = ''   # optional: watch a specific ui folder (default: auto-detect)
 )
 
 $ErrorActionPreference = 'Stop'
+# GitHub's API requires TLS 1.2 - force it for older Windows PowerShell.
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+
 $scriptSelf = $MyInvocation.MyCommand.Path
 $scriptDir  = Split-Path -Parent $scriptSelf
 $patchScript = Join-Path $scriptDir 'freebuff-rtl-patch.ps1'
+$versionFile = Join-Path $scriptDir 'VERSION'
 $taskName   = 'Freebuff RTL Auto-Patch'
 $logDir     = Join-Path $env:LOCALAPPDATA 'freebuff-rtl'
 $logFile    = Join-Path $logDir 'autopatch.log'
+$updatesDir = Join-Path $logDir 'updates'
+$markerDir  = Join-Path $env:TEMP 'freebuff-desktop-pastes'
+$ghRepo     = 'Lev-Good/freebuff-rtl'
+$ghApiUrl   = "https://api.github.com/repos/$ghRepo/releases/latest"
+$ghUserAgent = 'freebuff-rtl-autopatch'
+
+# Update cadence for the background check.
+$UpdateCheckIntervalSec = 6 * 60 * 60   # every 6 hours
+# A marker older than this is stale (e.g. left by a session that never
+# finished closing) and is ignored.
+$MarkerMaxAgeSec = 30 * 60
+# How long the keeper waits for Freebuff to exit after an update request
+# before giving up on the relaunch.
+$RestartWaitSec = 90
 
 if (-not (Test-Path -LiteralPath $patchScript)) {
   Write-Host "[Freebuff RTL] Missing $patchScript (must sit next to this script)." -ForegroundColor Red
@@ -70,13 +98,167 @@ function Invoke-PatchOnce {
   }
 }
 
-# ---- Install: register the per-user scheduled task --------------------------
-# Autostart strategy:
-#   * Primary: HKCU Run key - per-user, needs no admin rights, runs at every
-#     logon. Verified to work even in restricted shells (scheduled-task
-#     creation with an ONLOGON trigger requires elevation on many setups).
-#   * The launcher value points at powershell.exe running this script
-#     hidden, so no console window flashes at logon.
+# ---- version helpers --------------------------------------------------------
+
+function Compare-Version {
+  # Returns 1 when $a is newer than $b, -1 when older, 0 when equal.
+  param([string]$a, [string]$b)
+  $pa = ($a -replace '^v', '') -split '\.' | ForEach-Object { try { [int]$_ } catch { 0 } }
+  $pb = ($b -replace '^v', '') -split '\.' | ForEach-Object { try { [int]$_ } catch { 0 } }
+  for ($i = 0; $i -lt [Math]::Max($pa.Count, $pb.Count); $i++) {
+    $va = if ($i -lt $pa.Count) { $pa[$i] } else { 0 }
+    $vb = if ($i -lt $pb.Count) { $pb[$i] } else { 0 }
+    if ($va -gt $vb) { return 1 }
+    if ($va -lt $vb) { return -1 }
+  }
+  return 0
+}
+
+function Get-LocalVersion {
+  if (-not (Test-Path -LiteralPath $versionFile)) { return '0.0.0' }
+  try { return ([IO.File]::ReadAllText($versionFile)).Trim() } catch { return '0.0.0' }
+}
+
+function Get-LatestRelease {
+  try {
+    $r = Invoke-RestMethod -Uri $ghApiUrl -Headers @{ 'User-Agent' = $ghUserAgent } -TimeoutSec 15
+    if ($r -and $r.tag_name) { return @{ Tag = [string]$r.tag_name; Body = [string]$r.body } }
+  } catch {
+    Write-Log "update check failed: $($_.Exception.Message)"
+  }
+  return $null
+}
+
+# ---- self-update ------------------------------------------------------------
+
+function Invoke-SelfUpdate {
+  # Downloads and installs the newest release of this script into $scriptDir,
+  # deleting leftover files of older versions, then re-applies the RTL patch.
+  # Returns $true when an update was applied, $false otherwise.
+  try {
+    $latest = Get-LatestRelease
+    if (-not $latest) { return $false }
+    $local = Get-LocalVersion
+    if ((Compare-Version $latest.Tag $local) -le 0) { return $false }
+
+    Write-Log "self-update: newer version $($latest.Tag) found (installed: $local) - downloading"
+    $tagNoV = $latest.Tag -replace '^v', ''
+    $zipUrl = "https://github.com/$ghRepo/archive/refs/tags/$($latest.Tag).zip"
+    $zipPath = Join-Path $updatesDir ($latest.Tag + '.zip')
+    $extractDir = Join-Path $updatesDir $tagNoV
+
+    New-Item -ItemType Directory -Path $updatesDir -Force | Out-Null
+    if (Test-Path -LiteralPath $extractDir) { Remove-Item -LiteralPath $extractDir -Recurse -Force -ErrorAction SilentlyContinue }
+    Invoke-WebRequest -Uri $zipUrl -OutFile $zipPath -Headers @{ 'User-Agent' = $ghUserAgent } -TimeoutSec 120
+    Expand-Archive -LiteralPath $zipPath -DestinationPath $extractDir -Force
+
+    # GitHub source archives unpack to <repo>-<version>/.
+    $src = Join-Path $extractDir ("$($ghRepo.Split('/')[1])-$tagNoV")
+    if (-not (Test-Path -LiteralPath $src)) {
+      $src = Get-ChildItem -LiteralPath $extractDir -Directory | Select-Object -First 1 -ExpandProperty FullName
+    }
+    if (-not $src -or -not (Test-Path -LiteralPath $src)) {
+      Write-Log "self-update FAILED: could not find extracted files in $extractDir"
+      return $false
+    }
+
+    # Copy the new files over the current script folder.
+    $newFiles = Get-ChildItem -LiteralPath $src -File
+    foreach ($f in $newFiles) {
+      Copy-Item -LiteralPath $f.FullName -Destination (Join-Path $scriptDir $f.Name) -Force
+    }
+    Write-Log "self-update: copied $($newFiles.Count) file(s) to $scriptDir"
+
+    # Delete leftover files of previous versions that are not part of the
+    # release (e.g. the old light-mode files) plus stray zips/temp files.
+    $newNames = @($newFiles | ForEach-Object { $_.Name })
+    # Anything a previous version of this project shipped (including the old
+    # light-mode files) that the new release does not contain is stale.
+    Get-ChildItem -LiteralPath $scriptDir -File -ErrorAction SilentlyContinue | Where-Object {
+      $_.Name -match '^(freebuff-rtl|freebuff-light|apply-rtl|apply-light|remove-rtl|remove-light|remove-permanent|install-permanent|VERSION|README)' -and
+      $newNames -notcontains $_.Name
+    } | ForEach-Object {
+      Remove-Item -LiteralPath $_.FullName -Force -ErrorAction SilentlyContinue
+      Write-Log "self-update: removed old file $($_.Name)"
+    }
+    Remove-Item -LiteralPath $zipPath -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $extractDir -Recurse -Force -ErrorAction SilentlyContinue
+    Write-Log "self-update: cleaned up download artifacts"
+
+    # The autostart entry points at the same path - keep it registered, then
+    # re-apply the patch so the new injected scripts reach the app.
+    [void](Register-Task)
+    [void](Invoke-PatchOnce)
+
+    try {
+      @{ version = $latest.Tag; applied = $true; at = (Get-Date).ToString('o') } |
+        ConvertTo-Json | Set-Content -LiteralPath (Join-Path $logDir 'update-ready.json') -Encoding UTF8
+    } catch {}
+    Write-Log "self-update: installed $($latest.Tag)"
+    return $true
+  } catch {
+    Write-Log "self-update threw: $($_.Exception.Message)"
+    return $false
+  }
+}
+
+# ---- app restart (triggered by the in-app update button) --------------------
+
+function Get-FreebuffExe {
+  $candidates = @(
+    (Join-Path $env:LOCALAPPDATA 'Programs\@codebufffreebuff-desktop\Freebuff.exe'),
+    (Join-Path $env:ProgramFiles '@codebufffreebuff-desktop\Freebuff.exe'),
+    (Join-Path ${env:ProgramFiles(x86)} '@codebufffreebuff-desktop\Freebuff.exe')
+  )
+  return ($candidates | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1)
+}
+
+function Test-FreebuffRunning {
+  return [bool](Get-Process -Name 'Freebuff' -ErrorAction SilentlyContinue)
+}
+
+function Consume-RestartMarkers {
+  # The in-app button writes a tiny JSON marker (freebuffRtlRestart=true)
+  # through the app's clipboard-image IPC into %TEMP%\freebuff-desktop-pastes\
+  # as paste-*.rtlupdate. When one is found the user asked for
+  # "update & relaunch": consume it, make sure the update is applied and let
+  # the keeper loop relaunch the app once it has exited.
+  if (-not (Test-Path -LiteralPath $markerDir)) { return $false }
+  $markers = Get-ChildItem -LiteralPath $markerDir -Filter 'paste-*.rtlupdate' -ErrorAction SilentlyContinue
+  $found = $false
+  foreach ($m in $markers) {
+    try {
+      $json = $m | Get-Content -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
+      if ($json.freebuffRtlRestart -eq $true) {
+        $age = ((Get-Date) - $m.LastWriteTime).TotalSeconds
+        if ($age -gt $MarkerMaxAgeSec) {
+          Write-Log "restart marker is stale ($([int]$age)s) - ignoring"
+        } else {
+          Write-Log "restart marker received (version $($json.version))"
+          $found = $true
+        }
+      }
+    } catch {
+      Write-Log "bad restart marker $($m.Name): $($_.Exception.Message)"
+    }
+    Remove-Item -LiteralPath $m.FullName -Force -ErrorAction SilentlyContinue
+  }
+  return $found
+}
+
+function Start-PendingRelaunch {
+  # Once the app has exited after an update request, bring it back.
+  $exe = Get-FreebuffExe
+  if (-not $exe) {
+    Write-Log 'relaunch: Freebuff.exe not found - cannot restart the app'
+    return
+  }
+  Write-Log "relaunch: starting $exe"
+  try { Start-Process -FilePath $exe | Out-Null } catch { Write-Log "relaunch failed: $($_.Exception.Message)" }
+}
+
+# ---- install / remove -------------------------------------------------------
+
 $runKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
 $runName = 'Freebuff RTL Auto-Patch'
 
@@ -113,11 +295,16 @@ if ($Install) {
   }
   Write-Host '[Freebuff RTL] Applying the patch now...'
   [void](Invoke-PatchOnce)
+  Write-Host '[Freebuff RTL] Checking for a newer version of the script...'
+  if (Invoke-SelfUpdate) {
+    Write-Host "[Freebuff RTL] Updated to the latest version - the patch was re-applied." -ForegroundColor Green
+  } else {
+    Write-Host '[Freebuff RTL] Already running the latest version.' -ForegroundColor Green
+  }
   Write-Host '[Freebuff RTL] Done. The patch will now survive Freebuff updates automatically.' -ForegroundColor Green
   exit 0
 }
 
-# ---- Remove: unregister the autostart entry --------------------------------
 if ($Remove) {
   if (Unregister-Task) {
     Write-Host "[Freebuff RTL] Autostart entry '$taskName' removed." -ForegroundColor Green
@@ -125,22 +312,41 @@ if ($Remove) {
     Write-Host '[Freebuff RTL] Failed to remove the autostart entry.' -ForegroundColor Red
     exit 1
   }
-  Write-Host '[Freebuff RTL] The RTL patch itself is untouched - run remove-rtl.bat to uninstall it too.' 
+  # Cancel any pending "update & relaunch" request so the app is not
+  # unexpectedly restarted later.
+  if (Test-Path -LiteralPath $markerDir) {
+    Get-ChildItem -LiteralPath $markerDir -Filter 'paste-*.rtlupdate' -ErrorAction SilentlyContinue |
+      Remove-Item -Force -ErrorAction SilentlyContinue
+  }
+  Write-Host '[Freebuff RTL] The RTL patch itself is untouched - run remove-rtl.bat to uninstall it too.'
   exit 0
 }
 
-# ---- Once: apply and exit ----------------------------------------------------
 if ($Once) {
   [void](Invoke-PatchOnce)
   exit 0
 }
 
-# ---- Keeper loop -------------------------------------------------------------
+if ($CheckUpdates) {
+  if (Invoke-SelfUpdate) {
+    Write-Host "[Freebuff RTL] Updated to the latest version." -ForegroundColor Green
+  } else {
+    Write-Host '[Freebuff RTL] Already running the latest version.' -ForegroundColor Green
+  }
+  exit 0
+}
+
+# ---- keeper loop ------------------------------------------------------------
+
 Write-Host "[Freebuff RTL] Keeper started - watching for Freebuff updates (poll every ${PollSeconds}s)." -ForegroundColor Green
 Write-Log 'keeper started'
 
 $lastHtmlMtime = $null
 $lastCssMtime  = $null
+$lastUpdateCheck = 0
+$pendingRestart = $false
+$pendingRestartAt = $null
+$loopCount = 0
 
 function Get-InstallPaths {
   # Returns the ui dir + current css file, or $null.
@@ -180,8 +386,13 @@ while ($true) {
 
       $changed = ($lastHtmlMtime -ne $null -and $htmlMtime -ne $lastHtmlMtime) -or
                  ($lastCssMtime -ne $null -and $cssMtime -ne $lastCssMtime)
+      # Also re-verify the markers on a slow cadence even when no mtime changed:
+      # a patch that failed mid-update (transient lock, app mid-install) would
+      # otherwise stay broken until the next Freebuff update touched the files.
+      $loopCount++
+      $recheck = ($loopCount % 10) -eq 0
 
-      if ($changed -or $lastHtmlMtime -eq $null) {
+      if ($changed -or $lastHtmlMtime -eq $null -or $recheck) {
         $lastHtmlMtime = $htmlMtime
         $lastCssMtime  = $cssMtime
         # File touched — could be an update OR our own patch. Re-check markers.
@@ -192,6 +403,7 @@ while ($true) {
         # patch re-runs, upgrading the stale script in place.
         $rtlOk   = $htmlText -match 'freebuff-rtl-dragfix v1' -and
                    $htmlText -match 'freebuff-rtl-dir v2' -and
+                   $htmlText -match 'freebuff-rtl-updater v1' -and
                    $htmlText -match 'dir="rtl"' -and
                    $cssText -match '/\* ==== freebuff-rtl ==== \*/'
         # Light/dark mode is built into Freebuff now - if a previous version
@@ -200,13 +412,40 @@ while ($true) {
         $lightLeft = $htmlText -match 'freebuff-light' -or
                      $cssText -match '/\* ==== freebuff-light ==== \*/'
         if (-not $rtlOk) {
-          Write-Log 'update detected - re-applying RTL patch'
+          Write-Log 'RTL patch missing or stale - re-applying'
           [void](Invoke-PatchOnce)
         }
         if ($lightLeft) {
           Write-Log 'legacy light-mode toggle detected - removing it (built into Freebuff now)'
           [void](Invoke-PatchOnce)
         }
+      }
+    }
+
+    # --- background self-update check (once at start, then every 6h) ---------
+    $nowSec = [int][double]::Parse((Get-Date -UFormat %s))
+    if ($nowSec - $lastUpdateCheck -ge $UpdateCheckIntervalSec) {
+      $lastUpdateCheck = $nowSec
+      [void](Invoke-SelfUpdate)
+    }
+
+    # --- update & relaunch handshake from the in-app button -------------------
+    if (Consume-RestartMarkers) {
+      $pendingRestart = $true
+      $pendingRestartAt = Get-Date
+      # Make sure the newest version is installed before the app comes back.
+      [void](Invoke-SelfUpdate)
+    }
+
+    if ($pendingRestart) {
+      if (-not (Test-FreebuffRunning)) {
+        Start-PendingRelaunch
+        $pendingRestart = $false
+        $pendingRestartAt = $null
+      } elseif ($pendingRestartAt -and ((Get-Date) - $pendingRestartAt).TotalSeconds -gt $RestartWaitSec) {
+        Write-Log 'relaunch: app did not exit in time - skipping'
+        $pendingRestart = $false
+        $pendingRestartAt = $null
       }
     }
   } catch {

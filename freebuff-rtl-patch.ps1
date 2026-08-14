@@ -39,6 +39,8 @@ $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $sheetFile = Join-Path $scriptDir 'freebuff-rtl.css'
 $shimFile  = Join-Path $scriptDir 'freebuff-rtl-dragfix.js'
 $dirJsFile = Join-Path $scriptDir 'freebuff-rtl-dir.js'
+$updaterJsFile = Join-Path $scriptDir 'freebuff-rtl-updater.js'
+$versionFile   = Join-Path $scriptDir 'VERSION'
 $marker    = '/* ==== freebuff-rtl ==== */'
 # Light/dark mode is built into Freebuff now. The marker below is kept only
 # so the engine can detect and strip a light-mode block that a previous
@@ -102,16 +104,28 @@ function Resolve-Paths {
 
 function Set-InjectedScript {
   # Replaces (or inserts) the injected <script> block for $marker with the
-  # current contents of $file. Older injected copies (e.g. from a previous
-  # drag-shim version) are swapped in place instead of being left stale.
-  # Returns the updated html.
-  param([string]$Html, [string]$Marker, [string]$File)
-  $js = [IO.File]::ReadAllText($File)
+  # current contents of $file (or $Content when supplied). Older injected
+  # copies (e.g. from a previous drag-shim version) are swapped in place
+  # instead of being left stale. Returns the updated html.
+  param([string]$Html, [string]$Marker, [string]$File, [string]$Content = '')
+  if (-not $Content) { $Content = [IO.File]::ReadAllText($File) }
   $pattern = '(?is)<script[^>]*>\s*/\* ' + [regex]::Escape($Marker) + '.*?</script>'
   if ($Html -match $pattern) {
-    return [regex]::Replace($Html, $pattern, '<script>' + $js + '</script>')
+    return [regex]::Replace($Html, $pattern, '<script>' + $Content + '</script>')
   }
-  return [regex]::Replace($Html, '(?i)(<head[^>]*>)', { param($x) $x.Groups[1].Value + '<script>' + $js + '</script>' })
+  return [regex]::Replace($Html, '(?i)(<head[^>]*>)', { param($x) $x.Groups[1].Value + '<script>' + $Content + '</script>' })
+}
+
+function Get-UpdaterScript {
+  # Reads freebuff-rtl-updater.js and bakes the current VERSION file into it,
+  # so the version the in-app notifier compares against always matches the
+  # release it shipped with.
+  if (-not (Test-Path -LiteralPath $updaterJsFile)) { return '' }
+  $version = '0.0.0'
+  if (Test-Path -LiteralPath $versionFile) {
+    $version = ([IO.File]::ReadAllText($versionFile)).Trim()
+  }
+  return ([IO.File]::ReadAllText($updaterJsFile)) -replace '__VERSION__', $version
 }
 
 function Invoke-Apply {
@@ -190,6 +204,20 @@ function Invoke-Apply {
     Write-Out 'RTL/LTR direction toggle already up to date.'
   }
 
+  $before = $html
+  $updaterJs = Get-UpdaterScript
+  if ($updaterJs) {
+    $html = Set-InjectedScript $html 'freebuff-rtl-updater' $updaterJsFile $updaterJs
+    if ($html -ne $before) {
+      Write-Out 'Update notifier injected/updated in index.html.'
+      $changed = $true
+    } else {
+      Write-Out 'Update notifier already up to date.'
+    }
+  } else {
+    Write-Out "WARNING: $updaterJsFile missing - update notifier NOT injected."
+  }
+
   # Strip the old light-mode toggle script from a previous install - light/
   # dark mode is built into Freebuff now.
   if ($html -match 'freebuff-light') {
@@ -250,6 +278,13 @@ function Invoke-Revert {
       $changed = $true
     } else {
       Write-Out 'HTML: no direction toggle - nothing to remove.'
+    }
+    if ($html -match 'freebuff-rtl-updater') {
+      $html = [regex]::Replace($html, '(?is)<script[^>]*>\s*/\* freebuff-rtl-updater.*?</script>', '')
+      Write-Out 'HTML: update notifier removed.'
+      $changed = $true
+    } else {
+      Write-Out 'HTML: no update notifier - nothing to remove.'
     }
     if ($html -match 'freebuff-light') {
       $html = [regex]::Replace($html, '(?is)<script[^>]*>\s*/\* freebuff-light.*?</script>', '')

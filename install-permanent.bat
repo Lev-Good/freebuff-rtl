@@ -15,9 +15,13 @@ rem  To undo: run remove-permanent.bat
 rem ===========================================================================
 setlocal
 powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0freebuff-rtl-autopatch.ps1" -Install
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0freebuff-rtl-autopatch.ps1" -CheckUpdates
 powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0freebuff-rtl-patch.ps1"
 echo.
 echo [Freebuff RTL] Auto-patch is now installed permanently.
 echo [Freebuff RTL] It starts at every logon and survives Freebuff updates.
+echo [Freebuff RTL] It also keeps the script itself up to date - a message pops
+echo [Freebuff RTL] up inside Freebuff when a new version is available, with
+echo [Freebuff RTL] a button that updates, closes and restarts the app.
 echo [Freebuff RTL] Restart Freebuff once - the layout is RTL.
 pause
