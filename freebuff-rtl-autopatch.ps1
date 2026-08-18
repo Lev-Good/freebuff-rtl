@@ -38,6 +38,7 @@ param(
   [switch]$Remove,
   [switch]$Once,
   [switch]$CheckUpdates,
+  [switch]$Watchdog,    # lightweight periodic check that restarts the keeper if it died
   [int]$PollSeconds = 3,
   [string]$UiDir = ''   # optional: watch a specific ui folder (default: auto-detect)
 )
@@ -51,6 +52,13 @@ $scriptDir  = Split-Path -Parent $scriptSelf
 $patchScript = Join-Path $scriptDir 'freebuff-rtl-patch.ps1'
 $versionFile = Join-Path $scriptDir 'VERSION'
 $taskName   = 'Freebuff RTL Auto-Patch'
+# Secondary layer of reliability on top of the HKCU Run key: two scheduled
+# tasks. The logon task starts the keeper at every logon; the watchdog task
+# runs every few minutes and restarts the keeper if it ever died - so a
+# Freebuff update is never missed because the keeper was not alive.
+$watchdogTask = 'Freebuff RTL Auto-Patch Watchdog'
+$keeperMutex  = 'FreebuffRtlKeeperMutex'
+$psExe        = "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"
 $logDir     = Join-Path $env:LOCALAPPDATA 'freebuff-rtl'
 $logFile    = Join-Path $logDir 'autopatch.log'
 $updatesDir = Join-Path $logDir 'updates'
@@ -263,27 +271,154 @@ $runKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
 $runName = 'Freebuff RTL Auto-Patch'
 
 function Get-LaunchValue {
-  $ps = "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"
-  return ('"' + $ps + '" -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "' + $scriptSelf + '"')
+  return ('"' + $psExe + '" -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "' + $scriptSelf + '"')
 }
 
-function Register-Task {
-  $value = Get-LaunchValue
+# ---- scheduled-task helpers (used by Register-Task / the watchdog) -----------
+# Uses the Task Scheduler COM API directly (Schedule.Service). The schtasks.exe
+# CLI chokes on non-ASCII install paths and the CIM cmdlets are unavailable in
+# some environments, but COM passes plain Unicode strings and works everywhere.
+# No admin rights needed: tasks are registered for the current user with an
+# interactive logon token.
+
+function New-TaskScheduler {
+  $ts = New-Object -ComObject Schedule.Service
+  $ts.Connect()
+  return $ts
+}
+
+function Test-TaskExists {
+  param([string]$Name)
   try {
-    Set-ItemProperty -Path $runKey -Name $runName -Value $value -Force
+    $ts = New-TaskScheduler
+    $root = $ts.GetFolder('\')
+    $task = $root.GetTask($Name)
+    return ($null -ne $task)
+  } catch {
+    return $false
+  }
+}
+
+function Set-TaskCommon {
+  # Shared settings for both tasks: hidden, survive reboots, no duplicate
+  # instances, and (for the keeper) auto-restart shortly after a crash.
+  param($Task, [string]$Description, [bool]$RestartOnFailure, [string]$ExecTimeLimit)
+  $Task.RegistrationInfo.Description = $Description
+  $Task.Settings.StartWhenAvailable = $true
+  $Task.Settings.Enabled = $true
+  $Task.Settings.MultipleInstances = 1   # TASK_INSTANCES_IGNORE_NEW
+  $Task.Settings.ExecutionTimeLimit = $ExecTimeLimit
+  $Task.Settings.DisallowStartIfOnBatteries = $false
+  $Task.Settings.StopIfGoingOnBatteries = $false
+  $Task.Settings.Hidden = $false
+  if ($RestartOnFailure) {
+    $Task.Settings.RestartCount = 9999
+    $Task.Settings.RestartInterval = 'PT1M'  # retry 1 minute after a crash
+  }
+}
+
+function Register-KeeperTask {
+  # Logon task: starts the keeper at every Windows logon. Restart-on-failure
+  # brings it back within a minute if it ever crashes.
+  try {
+    $ts = New-TaskScheduler
+    $root = $ts.GetFolder('\')
+    $task = $ts.NewTask(0)
+    Set-TaskCommon $task 'Freebuff RTL keeper - re-applies the RTL patch after every Freebuff update.' $true 'PT0S'
+    $trigger = $task.Triggers.Create(9)   # TASK_TRIGGER_LOGON
+    # A per-user logon trigger (UserId set) needs no admin rights; an
+    # all-users trigger would require elevation.
+    $trigger.UserId = $env:USERNAME
+    $action = $task.Actions.Create(0)     # TASK_ACTION_EXEC
+    $action.Path = $psExe
+    $action.Arguments = '-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "' + $scriptSelf + '"'
+    $root.RegisterTaskDefinition($taskName, $task, 6, $null, $null, 3, $null) | Out-Null
+    return $true
+  } catch {
+    Write-Log "keeper task registration failed: $($_.Exception.Message)"
+    return $false
+  }
+}
+
+function Register-WatchdogTask {
+  # Runs every few minutes. The -Watchdog mode checks whether the keeper is
+  # still alive and restarts it if not - so even a keeper that dies in a way
+  # restart-on-failure does not catch comes back on its own.
+  try {
+    $ts = New-TaskScheduler
+    $root = $ts.GetFolder('\')
+    $task = $ts.NewTask(0)
+    Set-TaskCommon $task 'Freebuff RTL keeper watchdog - restarts the keeper if it died.' $false 'PT2M'
+    $trigger = $task.Triggers.Create(1)   # TASK_TRIGGER_TIME (once, with repetition)
+    # Start 30s in the future (not 'now'): a boundary that is already in the
+    # past can be skipped by Task Scheduler even with StartWhenAvailable, and
+    # a logon trigger does not fire for an already-logged-on session - so this
+    # time trigger is the pattern that actually fires (verified empirically).
+    $trigger.StartBoundary = (Get-Date).AddSeconds(30).ToString('yyyy-MM-ddTHH:mm:ss')
+    $trigger.Repetition.Interval = 'PT5M' # every 5 minutes; no Duration = repeat indefinitely
+    $action = $task.Actions.Create(0)
+    $action.Path = $psExe
+    $action.Arguments = '-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "' + $scriptSelf + '" -Watchdog'
+    $root.RegisterTaskDefinition($watchdogTask, $task, 6, $null, $null, 3, $null) | Out-Null
+    return $true
+  } catch {
+    Write-Log "watchdog task registration failed: $($_.Exception.Message)"
+    return $false
+  }
+}
+
+function Remove-TaskByName {
+  param([string]$Name)
+  try {
+    $ts = New-TaskScheduler
+    $root = $ts.GetFolder('\')
+    $root.DeleteTask($Name, 0)
+  } catch {}
+}
+
+function Ensure-KeeperTask {
+  # The watchdog calls this first: if the logon task was deleted/disabled by
+  # anything, re-create it so the keeper can come back.
+  if (-not (Test-TaskExists $taskName)) {
+    [void](Register-KeeperTask)
+  }
+}
+
+function Start-KeeperTask {
+  # Launches the keeper through its scheduled task (not as a child of this
+  # process, which Task Scheduler would kill when the action exits).
+  try {
+    $ts = New-TaskScheduler
+    $root = $ts.GetFolder('\')
+    $root.GetTask($taskName).Run($null) | Out-Null
     return $true
   } catch {
     return $false
   }
+}
+
+function Register-Task {
+  # Registers all three layers: the HKCU Run key, the logon scheduled task and
+  # the watchdog scheduled task. The watchdog is what makes this survive - if
+  # the keeper ever dies, Windows restarts it within a few minutes on its own.
+  $okRunKey = $false
+  try {
+    Set-ItemProperty -Path $runKey -Name $runName -Value (Get-LaunchValue) -Force
+    $okRunKey = $true
+  } catch {
+    $okRunKey = $false
+  }
+  $okTasks = (Register-KeeperTask) -and (Register-WatchdogTask)
+  return ($okRunKey -and $okTasks)
 }
 
 function Unregister-Task {
   try {
     Remove-ItemProperty -Path $runKey -Name $runName -ErrorAction SilentlyContinue
-    return $true
-  } catch {
-    return $false
-  }
+  } catch {}
+  Remove-TaskByName $taskName
+  Remove-TaskByName $watchdogTask
+  return $true
 }
 
 if ($Install) {
@@ -336,7 +471,53 @@ if ($CheckUpdates) {
   exit 0
 }
 
+# ---- watchdog mode ----------------------------------------------------------
+# Run by the 'Freebuff RTL Auto-Patch Watchdog' scheduled task every few
+# minutes. Cheap: checks whether a keeper is already alive (via a named
+# mutex, which the OS releases automatically when the keeper process dies)
+# and, if not, starts the keeper task. Exits immediately.
+if ($Watchdog) {
+  $lock = $null
+  $held = $false
+  try {
+    $lock = New-Object System.Threading.Mutex($false, $keeperMutex)
+    $held = $lock.WaitOne(0)
+  } catch {
+    $held = $false
+  }
+  if ($held) {
+    try { $lock.ReleaseMutex() | Out-Null } catch {}
+    # No keeper running - make sure the logon task exists, then launch it.
+    Ensure-KeeperTask
+    if (-not (Start-KeeperTask)) {
+      # Task layer unavailable (task deleted/locked) - start the keeper
+      # directly so the patch protection is never lost.
+      Write-Log 'watchdog: task start failed - starting keeper directly'
+      try {
+        Start-Process -FilePath $psExe -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden', '-File', ('"' + $scriptSelf + '"')) -WindowStyle Hidden | Out-Null
+      } catch {
+        Write-Log "watchdog: direct start failed: $($_.Exception.Message)"
+      }
+    }
+  }
+  exit 0
+}
+
 # ---- keeper loop ------------------------------------------------------------
+
+# Only one keeper may run (the Run key, the logon task and the watchdog can
+# all try to start it). A named mutex makes the extra launches exit silently.
+$keeperLock = $null
+$keeperLocked = $false
+try {
+  $keeperLock = New-Object System.Threading.Mutex($false, $keeperMutex)
+  $keeperLocked = $keeperLock.WaitOne(0)
+} catch {
+  $keeperLocked = $false
+}
+if (-not $keeperLocked) {
+  exit 0
+}
 
 Write-Host "[Freebuff RTL] Keeper started - watching for Freebuff updates (poll every ${PollSeconds}s)." -ForegroundColor Green
 Write-Log 'keeper started'

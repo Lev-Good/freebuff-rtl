@@ -92,7 +92,7 @@ html[dir="rtl"] .composer-context .agent-menu {
 
 /* ---- assistant feedback: keep the action on the physical left ------------ */
 /* In the stock LTR layout Give feedback is the leftmost footer action. The
-   RTL flex row mirrors it to the right, where it collides with the direction
+   RTL flex row mirrors it to the right, where it collides with our direction
    toggle and the model picker. Restore its physical left-edge position while
    leaving the rest of the message footer RTL. */
 html[dir="rtl"] .msg-footer .msg-feedback {
