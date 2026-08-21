@@ -45,6 +45,20 @@
     (document.body || root).appendChild(btn);
   }
 
-  if (document.body) { mount(); }
-  else { document.addEventListener('DOMContentLoaded', mount); }
+  /* Keep the button alive no matter what the app does to its DOM. Freebuff
+     is a React app that re-renders the whole tree; if anything ever removes
+     the button, put it straight back so the direction toggle is ALWAYS
+     available. Cheap: childList-only observer on body + html. */
+  function ensure() {
+    if (document.body && !document.getElementById('freebuff-dir-toggle')) {
+      mount();
+    }
+  }
+
+  ensure();
+  if (document.body) {
+    try { new MutationObserver(ensure).observe(document.body, { childList: true }); } catch (e) {}
+  }
+  try { new MutationObserver(ensure).observe(document.documentElement, { childList: true }); } catch (e) {}
+  document.addEventListener('DOMContentLoaded', ensure);
 })();

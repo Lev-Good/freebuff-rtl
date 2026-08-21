@@ -85,11 +85,22 @@ function Resolve-Paths {
   $cssFile = $null
   if (Test-Path -LiteralPath $htmlFile) {
     $htmlText = [IO.File]::ReadAllText($htmlFile)
-    $m = [regex]::Match($htmlText, 'href="([^"]*index-[^"]*\.css)"')
+    # Vite changes the hash in the entry stylesheet on every Freebuff
+    # release (for example index-Dy5FFLXx.css). Accept both quote styles and
+    # optional whitespace so the new bootstrap HTML remains discoverable.
+    $m = [regex]::Match($htmlText, '(?i)href\s*=\s*["'']([^"'']*index-[^"'']*\.css)["'']')
     if ($m.Success) {
       $ref = $m.Groups[1].Value.TrimStart('./').Replace('/', '\')
       $candidate = Join-Path $assetsDir $ref
       if (Test-Path -LiteralPath $candidate) { $cssFile = $candidate }
+    }
+    if (-not $cssFile) {
+      $m = [regex]::Match($htmlText, '(?i)href\s*=\s*["'']([^"'']*\.css)["'']')
+      if ($m.Success) {
+        $ref = $m.Groups[1].Value.TrimStart('./').Replace('/', '\')
+        $candidate = Join-Path $assetsDir $ref
+        if (Test-Path -LiteralPath $candidate) { $cssFile = $candidate }
+      }
     }
   }
   if (-not $cssFile) {
@@ -177,13 +188,25 @@ function Invoke-Apply {
   $changed = $false
 
   $m = [regex]::Match($html, '(?is)<html[^>]*>')
-  if ($m.Success -and $m.Value -notmatch '\sdir\s*=') {
-    $newTag = $m.Value -replace '<html', '<html dir="rtl"'
-    $html = $html.Remove($m.Index, $m.Length).Insert($m.Index, $newTag)
-    Write-Out 'dir="rtl" added to the html tag.'
-    $changed = $true
-  } else {
-    Write-Out 'dir already set on the html tag.'
+  if ($m.Success) {
+    if ($m.Value -match '(?i)\sdir\s*=') {
+      # Newer builds may ship an explicit dir="ltr" attribute. Replacing it
+      # is essential: merely detecting that an attribute exists leaves the
+      # RTL stylesheet gated off and makes the whole UI look LTR.
+      $newTag = [regex]::Replace($m.Value, '(?i)\sdir\s*=\s*(?:"[^"]*"|''[^'']*'')', ' dir="rtl"')
+      if ($newTag -ne $m.Value) {
+        $html = $html.Remove($m.Index, $m.Length).Insert($m.Index, $newTag)
+        Write-Out 'dir was reset to "rtl" on the html tag.'
+        $changed = $true
+      } else {
+        Write-Out 'dir already set to rtl.'
+      }
+    } else {
+      $newTag = $m.Value -replace '<html', '<html dir="rtl"'
+      $html = $html.Remove($m.Index, $m.Length).Insert($m.Index, $newTag)
+      Write-Out 'dir="rtl" added to the html tag.'
+      $changed = $true
+    }
   }
 
   $before = $html

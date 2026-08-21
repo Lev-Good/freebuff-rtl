@@ -48,7 +48,39 @@ $ErrorActionPreference = 'Stop'
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
 $scriptSelf = $MyInvocation.MyCommand.Path
-$scriptDir  = Split-Path -Parent $scriptSelf
+$sourceDir  = Split-Path -Parent $scriptSelf
+# Keep the background installation in a stable, ASCII-only per-user path.
+# Older releases registered the original download folder; when that folder
+# contained Hebrew characters, the nested PowerShell call lost the path and
+# the keeper could no longer re-apply the patch after a Freebuff update.
+$stableDir  = Join-Path $env:LOCALAPPDATA 'freebuff-rtl'
+$scriptDir  = $sourceDir
+
+if (-not [string]::Equals(
+    ([IO.Path]::GetFullPath($sourceDir)).TrimEnd([char[]]@('\', '/')),
+    ([IO.Path]::GetFullPath($stableDir)).TrimEnd([char[]]@('\', '/')),
+    [StringComparison]::OrdinalIgnoreCase
+  )) {
+  try {
+    New-Item -ItemType Directory -Path $stableDir -Force | Out-Null
+    # Copy the complete flat release payload before registering autostart.
+    # This also repairs installations created by v1.5.x in a moved/renamed
+    # download folder. File APIs handle Unicode here; only child process
+    # command lines need the encoded-command workaround below.
+    $releaseFiles = Get-ChildItem -LiteralPath $sourceDir -File -ErrorAction Stop | Where-Object {
+      $_.Name -match '^(freebuff-rtl|apply-rtl|remove-rtl|remove-permanent|install-permanent|VERSION|README|פוסט-)'
+    }
+    foreach ($file in $releaseFiles) {
+      Copy-Item -LiteralPath $file.FullName -Destination (Join-Path $stableDir $file.Name) -Force
+    }
+    $scriptDir = $stableDir
+    $scriptSelf = Join-Path $scriptDir 'freebuff-rtl-autopatch.ps1'
+  } catch {
+    Write-Host "[Freebuff RTL] Could not create the stable installation: $($_.Exception.Message)" -ForegroundColor Red
+    exit 1
+  }
+}
+
 $patchScript = Join-Path $scriptDir 'freebuff-rtl-patch.ps1'
 $versionFile = Join-Path $scriptDir 'VERSION'
 $taskName   = 'Freebuff RTL Auto-Patch'
@@ -58,9 +90,14 @@ $taskName   = 'Freebuff RTL Auto-Patch'
 # Freebuff update is never missed because the keeper was not alive.
 $watchdogTask = 'Freebuff RTL Auto-Patch Watchdog'
 $keeperMutex  = 'FreebuffRtlKeeperMutex'
+# Heartbeat written by the running keeper (pid + script path + timestamps).
+# It lets a newer keeper identify and stop a stale one WITHOUT WMI/CIM,
+# which can be broken on some machines ("Invalid class") - the heartbeat
+# carries the exact PID, so takeover is a plain Get-Process / Stop-Process.
+$keeperHeartbeat = Join-Path $stableDir 'keeper.json'
 $psExe        = "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"
 $wscriptExe   = "$env:SystemRoot\System32\wscript.exe"
-$logDir     = Join-Path $env:LOCALAPPDATA 'freebuff-rtl'
+$logDir     = $stableDir
 $logFile    = Join-Path $logDir 'autopatch.log'
 $updatesDir = Join-Path $logDir 'updates'
 $markerDir  = Join-Path $env:TEMP 'freebuff-desktop-pastes'
@@ -91,9 +128,18 @@ function Write-Log($msg) {
 
 function Invoke-PatchOnce {
   try {
-    $args = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $patchScript)
-    if ($UiDir) { $args += @('-CssDir', (Join-Path $UiDir 'assets')) }
-    $out = & powershell @args 2>&1 | Out-String
+    # Do not pass a Hebrew download path directly to Windows PowerShell 5.1:
+    # its child-process argument conversion can turn it into question marks.
+    # -EncodedCommand transports the complete command as UTF-16LE instead.
+    $escapedPatch = $patchScript.Replace("'", "''")
+    $command = "& '$escapedPatch'"
+    if ($UiDir) {
+      $escapedCssDir = (Join-Path $UiDir 'assets').Replace("'", "''")
+      $command += " -CssDir '$escapedCssDir'"
+    }
+    $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($command))
+    $args = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', $encoded)
+    $out = & $psExe @args 2>&1 | Out-String
     $ok = $LASTEXITCODE -eq 0
     if ($ok) {
       Write-Log "patch applied: $($out.Trim() -replace '\s+', ' ')"
@@ -271,6 +317,132 @@ function Start-PendingRelaunch {
 
 $runKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
 $runName = 'Freebuff RTL Auto-Patch'
+
+function Get-ProcessTable {
+  # Returns a hashtable { pid -> command line } for all processes, using the
+  # first provider that works. WMI/CIM can be broken on some machines
+  # ("Invalid class" from both Get-CimInstance and Get-WmiObject), so we
+  # fall back through the legacy provider and the deprecated wmic.exe before
+  # giving up. Returns $null when nothing works.
+  $table = @{}
+  try {
+    Get-CimInstance Win32_Process -ErrorAction Stop | ForEach-Object {
+      $table[[int]$_.ProcessId] = [string]$_.CommandLine
+    }
+    if ($table.Count) { return $table }
+  } catch {}
+  try {
+    Get-WmiObject Win32_Process -ErrorAction Stop | ForEach-Object {
+      $table[[int]$_.ProcessId] = [string]$_.CommandLine
+    }
+    if ($table.Count) { return $table }
+  } catch {}
+  try {
+    $wmic = "$env:SystemRoot\System32\wbem\wmic.exe"
+    if (Test-Path -LiteralPath $wmic) {
+      $csv = & $wmic process get ProcessId,CommandLine /format:csv 2>$null
+      foreach ($line in $csv) {
+        # CSV format: <Node>,<CommandLine>,<ProcessId> - a command line can
+        # itself contain commas, so split into at most 3 parts.
+        $parts = $line -split ',', 3
+        if ($parts.Count -eq 3 -and $parts[2].Trim() -match '^\d+$') {
+          $table[[int]$parts[2].Trim()] = $parts[1].Trim()
+        }
+      }
+      if ($table.Count) { return $table }
+    }
+  } catch {}
+  return $null
+}
+
+function Get-KeeperProcesses {
+  # Lists running processes that run THIS keeper script (freebuff-rtl-
+  # autopatch.ps1) from a path that is not the canonical stable copy.
+  # Returns @( [pscustomobject]@{ Id = ...; CommandLine = ... } ).
+  $table = Get-ProcessTable
+  if (-not $table) { return @() }
+  $result = @()
+  $stablePattern = [regex]::Escape($scriptSelf)
+  foreach ($entry in $table.GetEnumerator()) {
+    $cmd = [string]$entry.Value
+    if ($cmd -match 'freebuff-rtl-autopatch\.ps1' -and $cmd -notmatch $stablePattern) {
+      $result += [pscustomobject]@{ Id = [int]$entry.Key; CommandLine = $cmd }
+    }
+  }
+  return $result
+}
+
+function Test-AcquireMutex {
+  # Waits on a named mutex and reports ownership. Special case: when the
+  # previous owner DIED without releasing (which is exactly what happens
+  # after we stop a stale keeper), .NET throws AbandonedMutexException on
+  # the WaitOne that grants us ownership - that is a SUCCESS, not a failure.
+  param($Mutex)
+  try {
+    return $Mutex.WaitOne(0)
+  } catch [System.Threading.AbandonedMutexException] {
+    return $true
+  } catch {
+    return $false
+  }
+}
+
+function Write-Heartbeat {
+  # Records who we are so a newer keeper (or the watchdog) can take over if
+  # we ever go stale - e.g. when the folder we were started from was moved
+  # or deleted, which makes our patch path invalid while we still hold the
+  # mutex and silently block the canonical keeper.
+  try {
+    @{
+      pid        = $PID
+      scriptPath = $scriptSelf
+      startUtc   = (Get-Date).ToUniversalTime().ToString('o')
+      beatUtc    = (Get-Date).ToUniversalTime().ToString('o')
+    } | ConvertTo-Json | Set-Content -LiteralPath $keeperHeartbeat -Encoding UTF8
+  } catch {}
+}
+
+function Stop-LegacyKeepers {
+  # A keeper from an older version (or from a folder that was later moved or
+  # renamed) can keep running forever and hold the shared mutex, blocking the
+  # canonical keeper and leaving the RTL patch un-applied after a Freebuff
+  # update. This stops exactly those processes and nothing else:
+  #
+  #   1. Heartbeat first - the canonical keeper records its PID, so takeover
+  #      needs no process enumeration at all (works even with broken WMI).
+  #   2. Command-line scan as fallback - catches keepers too old to write a
+  #      heartbeat, using the first working provider (CIM -> WMI -> wmic).
+  #
+  # Returns $true when at least one stale keeper was stopped.
+  $stopped = @()
+
+  if (Test-Path -LiteralPath $keeperHeartbeat) {
+    try {
+      $hb = Get-Content -LiteralPath $keeperHeartbeat -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
+      if ($hb.pid -and [int]$hb.pid -ne $PID) {
+        $hbProc = Get-Process -Id ([int]$hb.pid) -ErrorAction SilentlyContinue
+        $canonical = $scriptSelf -and $hb.scriptPath -and ([string]$hb.scriptPath -match [regex]::Escape($scriptSelf))
+        if ($hbProc -and -not $canonical) {
+          Stop-Process -Id ([int]$hb.pid) -Force -ErrorAction SilentlyContinue
+          $stopped += [int]$hb.pid
+          Write-Log "takeover: stopped stale keeper pid $($hb.pid) (path $($hb.scriptPath))"
+        }
+      }
+    } catch {
+      Write-Log "takeover: could not read heartbeat: $($_.Exception.Message)"
+    }
+  }
+
+  foreach ($p in (Get-KeeperProcesses)) {
+    try {
+      Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+      $stopped += $p.Id
+      Write-Log "takeover: stopped legacy keeper pid $($p.Id)"
+    } catch {}
+  }
+
+  return ($stopped.Count -gt 0)
+}
 
 function Get-HiddenLauncherPath {
   # wscript.exe is a GUI-subsystem application, so a scheduled task / Run key
@@ -465,10 +637,12 @@ function Unregister-Task {
   } catch {}
   Remove-TaskByName $taskName
   Remove-TaskByName $watchdogTask
+  Remove-Item -LiteralPath $keeperHeartbeat -Force -ErrorAction SilentlyContinue
   return $true
 }
 
 if ($Install) {
+  Stop-LegacyKeepers
   if (Register-Task) {
     Write-Host "[Freebuff RTL] Autostart entry '$taskName' registered - it will run at every logon." -ForegroundColor Green
   } else {
@@ -526,11 +700,16 @@ if ($CheckUpdates) {
 if ($Watchdog) {
   # Make sure the hidden launcher exists before any launch attempt.
   [void](Get-HiddenLauncherPath)
+  # If the mutex is held by a STALE keeper (old version / moved folder), stop
+  # it here so the canonical keeper can start on this cycle. Harmless when the
+  # running keeper is healthy - the heartbeat scan only touches non-canonical
+  # processes.
+  [void](Stop-LegacyKeepers)
   $lock = $null
   $held = $false
   try {
     $lock = New-Object System.Threading.Mutex($false, $keeperMutex)
-    $held = $lock.WaitOne(0)
+    $held = Test-AcquireMutex $lock
   } catch {
     $held = $false
   }
@@ -560,12 +739,25 @@ $keeperLock = $null
 $keeperLocked = $false
 try {
   $keeperLock = New-Object System.Threading.Mutex($false, $keeperMutex)
-  $keeperLocked = $keeperLock.WaitOne(0)
+  $keeperLocked = Test-AcquireMutex $keeperLock
 } catch {
   $keeperLocked = $false
 }
 if (-not $keeperLocked) {
-  exit 0
+  # Another keeper holds the mutex. If it is a stale copy from an older
+  # version or from a folder that was moved/deleted, stop it and try once
+  # more; if it is the canonical copy, a healthy keeper is already running
+  # and we exit. This is what prevents the "button disappeared after an
+  # update" failure mode: a stale keeper with a dead patch path can no
+  # longer block the canonical one forever.
+  if (Stop-LegacyKeepers) {
+    Start-Sleep -Seconds 2
+    $keeperLocked = Test-AcquireMutex $keeperLock
+  }
+  if (-not $keeperLocked) {
+    Write-Log 'keeper: another keeper instance is already running - exiting'
+    exit 0
+  }
 }
 
 # Keep the hidden launcher in place so the watchdog task keeps working even
@@ -573,7 +765,8 @@ if (-not $keeperLocked) {
 [void](Get-HiddenLauncherPath)
 
 Write-Host "[Freebuff RTL] Keeper started - watching for Freebuff updates (poll every ${PollSeconds}s)." -ForegroundColor Green
-Write-Log 'keeper started'
+Write-Log "keeper started (pid $PID, script $scriptSelf)"
+Write-Heartbeat
 
 $lastHtmlMtime = $null
 $lastCssMtime  = $null
@@ -598,20 +791,28 @@ function Get-InstallPaths {
   $assetsDir = Join-Path $uiDir 'assets'
   $cssFile = $null
   $htmlText = [IO.File]::ReadAllText($htmlFile)
-  $m = [regex]::Match($htmlText, 'href="([^"]*index-[^"]*\.css)"')
+  # Keep watching the stylesheet actually linked by the hashed Vite build;
+  # the filename changes after every Freebuff update.
+  $m = [regex]::Match($htmlText, '(?i)href\s*=\s*["'']([^"'']*index-[^"'']*\.css)["'']')
+  if (-not $m.Success) {
+    $m = [regex]::Match($htmlText, '(?i)href\s*=\s*["'']([^"'']*\.css)["'']')
+  }
   if ($m.Success) {
     $ref = $m.Groups[1].Value.TrimStart('./').Replace('/', '\')
     $candidate = Join-Path $assetsDir $ref
     if (Test-Path -LiteralPath $candidate) { $cssFile = $candidate }
   }
   if (-not $cssFile) {
-    $cssFile = Get-ChildItem -LiteralPath $assetsDir -Filter 'index-*.css' -ErrorAction SilentlyContinue |
-      Where-Object { $_.Name -notlike '*.bak' } | Select-Object -First 1 -ExpandProperty FullName
+    $cssFile = Get-ChildItem -LiteralPath $assetsDir -Filter '*.css' -ErrorAction SilentlyContinue |
+      Where-Object { $_.Name -notlike '*.bak' } |
+      Sort-Object LastWriteTimeUtc -Descending |
+      Select-Object -First 1 -ExpandProperty FullName
   }
   return @{ Html = $htmlFile; Css = $cssFile }
 }
 
 while ($true) {
+  Write-Heartbeat
   try {
     $paths = Get-InstallPaths
     if ($paths) {
