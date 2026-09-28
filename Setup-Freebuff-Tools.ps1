@@ -5,7 +5,14 @@
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $Host.UI.RawUI.WindowTitle = "Freebuff All-in-One Setup"
 
-$scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+$scriptDir = $PSScriptRoot
+if (-not $scriptDir -and $MyInvocation.MyCommand.Path) {
+    $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+}
+if (-not $scriptDir) {
+    $scriptDir = (Get-Location).Path
+}
+
 $autopatchScript = Join-Path $scriptDir 'freebuff-rtl-autopatch.ps1'
 $patchScript     = Join-Path $scriptDir 'freebuff-rtl-patch.ps1'
 
@@ -44,24 +51,24 @@ function Install-Full {
     # 1. Register background keeper (protects against updates & self-updates)
     if (Test-Path -LiteralPath $autopatchScript) {
         Write-Host "[1/3] מגדיר שירות שמירה אוטומטי (שומר על השינויים בעדכוני תוכנה)..." -ForegroundColor White
-        & powershell -NoProfile -ExecutionPolicy Bypass -File $autopatchScript -Install
+        & $autopatchScript -Install
     }
 
     # 2. Apply full patch (RTL + Translation + Hub + AdBlock)
     if (Test-Path -LiteralPath $patchScript) {
         Write-Host "[2/3] מחיל עברית, RTL, חסימת פרסומות ומרכז שליטה פנימי..." -ForegroundColor White
-        & powershell -NoProfile -ExecutionPolicy Bypass -File $patchScript
+        & $patchScript
     }
 
     Write-Host "[3/3] בדיקת עדכונים ראשונית..." -ForegroundColor White
     if (Test-Path -LiteralPath $autopatchScript) {
-        & powershell -NoProfile -ExecutionPolicy Bypass -File $autopatchScript -CheckUpdates
+        & $autopatchScript -CheckUpdates
     }
 
     Write-Host ""
     Write-Host "==========================================================================" -ForegroundColor Green
     Write-Host "               ההתקנה המלאה הושלמה בהצלחה!" -ForegroundColor Green
-    Write-Host " כעת תמצא בתוך התוכנה (בפינה הימנית התחתונה) כפתור חדש:" -ForegroundColor Yellow
+    Write-Host " כעת תמצא בתוך התוכנה (בפינה הימנית) כפתור חדש:" -ForegroundColor Yellow
     Write-Host " [⚙️ כלים] - בלחיצה עליו תוכל לכבות/להדליק כל תכונה כרצונך בכל עת!" -ForegroundColor Yellow
     Write-Host "==========================================================================" -ForegroundColor Green
     Write-Host ""
@@ -80,21 +87,21 @@ function Install-Modular {
     $ansUpd   = Read-Host "4. האם לחסום עדכונים אוטומטיים של Freebuff? (y/N)"
     $ansKeep  = Read-Host "5. האם להפעיל שמירה קבועה נגד דריסת קבצים (Keeper)? (Y/n)"
 
-    $args = @()
-    if ($ansRtl -match '^[Nnלא]') { $args += '-NoRtl' }
-    if ($ansTrans -match '^[Nnלא]') { $args += '-NoTranslate' }
-    if ($ansAds -match '^[Nnלא]') { $args += '-NoAdsBlock' }
-    if ($ansUpd -match '^[Yyכן]') { $args += '-BlockUpdates' } else { $args += '-AllowUpdates' }
+    $argsList = @()
+    if ($ansRtl -match '^[Nnלא]') { $argsList += '-NoRtl' }
+    if ($ansTrans -match '^[Nnלא]') { $argsList += '-NoTranslate' }
+    if ($ansAds -match '^[Nnלא]') { $argsList += '-NoAdsBlock' }
+    if ($ansUpd -match '^[Yyכן]') { $argsList += '-BlockUpdates' } else { $argsList += '-AllowUpdates' }
 
     Write-Host ""
     Write-Host "מחיל את ההגדרות שבחרת..." -ForegroundColor Green
 
     if ($ansKeep -notmatch '^[Nnלא]' -and (Test-Path -LiteralPath $autopatchScript)) {
-        & powershell -NoProfile -ExecutionPolicy Bypass -File $autopatchScript -Install
+        & $autopatchScript -Install
     }
 
     if (Test-Path -LiteralPath $patchScript) {
-        & powershell -NoProfile -ExecutionPolicy Bypass -File $patchScript @args
+        & $patchScript @argsList
     }
 
     Write-Host ""
@@ -110,11 +117,11 @@ function Uninstall-All {
     if ($confirm -match '^[Yyכן]') {
         if (Test-Path -LiteralPath $autopatchScript) {
             Write-Host "מסיר שירות שמירה ורקע..." -ForegroundColor White
-            & powershell -NoProfile -ExecutionPolicy Bypass -File $autopatchScript -Uninstall
+            & $autopatchScript -Uninstall
         }
         if (Test-Path -LiteralPath $patchScript) {
             Write-Host "משחזר קבצי מערכת, ממשק ותרגום..." -ForegroundColor White
-            & powershell -NoProfile -ExecutionPolicy Bypass -File $patchScript -Revert
+            & $patchScript -Revert
         }
         Write-Host ""
         Write-Host "ההסרה הושלמה. Freebuff שוחזרה למצבה המקורי." -ForegroundColor Green
