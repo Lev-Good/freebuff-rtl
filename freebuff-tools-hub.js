@@ -8,6 +8,7 @@
 
   var CURRENT_VERSION = '1.7.0';
   var REPO = 'Lev-Good/freebuff-rtl';
+  var VERSION_URL = 'https://raw.githubusercontent.com/' + REPO + '/main/VERSION';
   var API_URL = 'https://api.github.com/repos/' + REPO + '/releases/latest';
   var RELEASES_PAGE = 'https://github.com/' + REPO + '/releases';
 
@@ -95,35 +96,64 @@
     return 0;
   }
 
-  // 4. Update check logic
+  // 4. Update check logic (checks raw VERSION first to bypass GitHub API rate limits, with fallback)
   function checkForUpdates(onDone) {
-    fetch(API_URL)
+    var bustUrl = VERSION_URL + '?_t=' + Date.now();
+    fetch(bustUrl)
       .then(function (res) {
         if (!res.ok) throw new Error('HTTP ' + res.status);
-        return res.json();
+        return res.text();
       })
-      .then(function (data) {
+      .then(function (rawVersion) {
+        var remoteVersion = rawVersion.trim().replace(/^v/i, '');
         try { localStorage.setItem(LS_LASTCHECK, String(Date.now())); } catch (e) {}
-        if (!data || !data.tag_name) {
-          if (onDone) onDone(false, 'לא התקבל מידע מ-GitHub');
-          return;
-        }
-        var latestTag = String(data.tag_name);
-        try { localStorage.setItem(LS_LATEST_TAG, latestTag); } catch (e) {}
-        var isNewer = cmpVersion(latestTag, CURRENT_VERSION) > 0;
+        try { localStorage.setItem(LS_LATEST_TAG, 'v' + remoteVersion); } catch (e) {}
+        
+        var isNewer = cmpVersion(remoteVersion, CURRENT_VERSION) > 0;
         if (isNewer) {
-          newReleaseAvailable = data;
+          var releaseData = {
+            tag_name: 'v' + remoteVersion,
+            html_url: RELEASES_PAGE,
+            assets: [{
+              name: 'Freebuff-Tools-Hub-v' + remoteVersion + '.zip',
+              browser_download_url: 'https://github.com/' + REPO + '/releases/download/v' + remoteVersion + '/Freebuff-Tools-Hub-v' + remoteVersion + '.zip'
+            }]
+          };
+          newReleaseAvailable = releaseData;
           showUpdateBadge(true);
-          showUpdateCard(data);
-          if (onDone) onDone(true, latestTag, data);
+          showUpdateCard(releaseData);
+          if (onDone) onDone(true, 'v' + remoteVersion, releaseData);
         } else {
           newReleaseAvailable = null;
           showUpdateBadge(false);
           if (onDone) onDone(false, 'הגרסה שבידך (v' + CURRENT_VERSION + ') היא המעודכנת ביותר!');
         }
       })
-      .catch(function (err) {
-        if (onDone) onDone(false, 'שגיאה בבדיקה: ' + (err.message || 'אין חיבור לרשת'));
+      .catch(function () {
+        // Fallback to GitHub API
+        fetch(API_URL)
+          .then(function (res) {
+            if (!res.ok) throw new Error('HTTP ' + res.status);
+            return res.json();
+          })
+          .then(function (data) {
+            if (!data || !data.tag_name) throw new Error('no tag');
+            var latestTag = String(data.tag_name);
+            var isNewer = cmpVersion(latestTag, CURRENT_VERSION) > 0;
+            if (isNewer) {
+              newReleaseAvailable = data;
+              showUpdateBadge(true);
+              showUpdateCard(data);
+              if (onDone) onDone(true, latestTag, data);
+            } else {
+              newReleaseAvailable = null;
+              showUpdateBadge(false);
+              if (onDone) onDone(false, 'הגרסה שבידך (v' + CURRENT_VERSION + ') היא המעודכנת ביותר!');
+            }
+          })
+          .catch(function () {
+            if (onDone) onDone(false, 'לא ניתן להתחבר ל-GitHub. <a href="' + RELEASES_PAGE + '" target="_blank" style="color:#10b981;text-decoration:underline;">לחץ לבדיקה בדפדפן</a>');
+          });
       });
   }
 
@@ -356,7 +386,7 @@
           if (hasUpdate) {
             statusEl.innerHTML = '<span style="color:#10b981;font-weight:600;">קיים עדכון ' + msg + '!</span>';
           } else {
-            statusEl.textContent = msg;
+            statusEl.innerHTML = msg;
           }
         });
       };
