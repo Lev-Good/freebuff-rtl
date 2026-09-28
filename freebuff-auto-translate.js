@@ -1,6 +1,6 @@
 /* freebuff-auto-translate v1 */
-// Freebuff Auto-Translator Engine (v1.0)
-// High-performance DOM translation with React VDOM safety & intelligent filtering.
+// Freebuff Auto-Translator Engine (v2.0)
+// High-performance DOM translation with React VDOM safety, multi-engine fallback & offline dictionary.
 (function () {
   'use strict';
 
@@ -13,7 +13,7 @@
     if (stored === '0') isEnabled = false;
   } catch (e) {}
 
-  // In-memory cache loaded from LocalStorage
+  // In-memory cache loaded from LocalStorage (persisted forever across runs)
   var translationCache = {};
   try {
     var rawCache = localStorage.getItem(STORAGE_KEY_CACHE);
@@ -28,11 +28,12 @@
       try {
         localStorage.setItem(STORAGE_KEY_CACHE, JSON.stringify(translationCache));
       } catch (e) {}
-    }, 2000);
+    }, 1000);
   }
 
-  // Pre-seeded high-accuracy dictionary for core UI terms (avoids cold start)
+  // Pre-seeded comprehensive dictionary for core Freebuff terms (0ms instant translation)
   var SEED_DICT = {
+    // Navigation & Common Actions
     'Settings': 'הגדרות',
     'General': 'כללי',
     'Appearance': 'מראה',
@@ -48,40 +49,103 @@
     'Terminal': 'מסוף',
     'Extensions': 'תוספים',
     'Save': 'שמור',
+    'Save all': 'שמור הכל',
     'Cancel': 'ביטול',
     'Close': 'סגור',
+    'Close tab': 'סגור כרטיסייה',
+    'Close other tabs': 'סגור כרטיסיות אחרות',
     'Apply': 'החל',
+    'Apply diff': 'החל שינויים',
+    'Accept': 'קבל',
+    'Accept change': 'קבל שינוי',
+    'Accept all': 'קבל הכל',
+    'Reject': 'דחה',
+    'Reject change': 'דחה שינוי',
+    'Reject all': 'דחה הכל',
     'Discard': 'בטל שינויים',
     'Delete': 'מחק',
     'Remove': 'הסר',
     'Rename': 'שנה שם',
     'Copy': 'העתק',
+    'Copy code': 'העתק קוד',
     'Paste': 'הדבק',
     'Cut': 'גזור',
     'Undo': 'בטל',
     'Redo': 'בצע שוב',
     'Search': 'חיפוש',
     'Search files': 'חיפוש קבצים',
+    'Search codebase': 'חיפוש בבסיס הקוד',
+    'Refresh': 'רענן',
+    'Reload': 'טען מחדש',
+    'Reload window': 'טען חלון מחדש',
+    
+    // Chat & Prompts
     'Type a message...': 'הקלד הודעה...',
     'Ask anything...': 'שאל כל דבר...',
+    'Ask a question or describe a task...': 'שאל שאלה או תאר משימה...',
     'Send': 'שלח',
     'Stop': 'עצור',
     'Stop generating': 'עצור הפקה',
     'Clear': 'נקה',
     'Clear chat': 'נקה שיחה',
+    'Clear history': 'נקה היסטוריה',
     'History': 'היסטוריה',
     'No conversations yet': 'אין עדיין שיחות',
     'Sign in': 'התחבר',
     'Sign out': 'התנתק',
     'Log out': 'התנתק',
+    'Try again': 'נסה שוב',
     'Retry': 'נסה שוב',
+    'Thinking...': 'חושב...',
+    'Searching codebase...': 'מחפש בבסיס הקוד...',
+    'Reading files...': 'קורא קבצים...',
+    'Writing file...': 'כותב קובץ...',
+    'Running command...': 'מריץ פקודה...',
+    'Command executed': 'הפקודה בוצעה',
+    'Changes applied': 'השינויים הוחלו',
+    
+    // Approvals & Security
+    'Allow once': 'אפשר פעם אחת',
+    'Always allow': 'אפשר תמיד',
+    'Deny': 'דחה',
+    'Confirm': 'אישור',
+    'Are you sure?': 'האם אתה בטוח?',
+    
+    // Models & Configuration
     'Model': 'מודל',
+    'Models': 'מודלים',
     'Default model': 'מודל ברירת מחדל',
+    'Provider': 'ספק',
+    'Providers': 'ספקים',
+    'API Key': 'מפתח API',
+    'Enter API key...': 'הזן מפתח API...',
     'Tokens': 'טוקנים',
     'Usage': 'שימוש',
     'Help': 'עזרה',
     'Documentation': 'תיעוד',
-    'Keyboard Shortcuts': 'קיצורי מקשים'
+    'Keyboard Shortcuts': 'קיצורי מקשים',
+    'Shortcuts': 'קיצורים',
+    'Custom Instructions': 'הוראות מותאמות אישית',
+    'System prompt': 'הנחיית מערכת',
+    'Temperature': 'טמפרטורה (יצירתיות)',
+    'Context window': 'חלון הקשר',
+    'Max output tokens': 'מקסימום טוקנים לפלט',
+    'Thinking budget': 'תקציב חשיבה',
+    'Prompt caching': 'מטמון הנחיות',
+    'Workspace': 'סביבת עבודה',
+    'Indexing': 'יצירת אינדקס',
+    'Indexing status': 'סטטוס אינדקס',
+    'Files indexed': 'קבצים שאונדקסו',
+    'Reindex': 'אנדקס מחדש',
+    
+    // File tree & editor
+    'Open folder': 'פתח תיקייה',
+    'Add project': 'הוסף פרויקט',
+    'New file': 'קובץ חדש',
+    'New folder': 'תיקייה חדשה',
+    'Collapse all': 'כווץ הכל',
+    'Reveal in explorer': 'הצג בסייר הקבצים',
+    'Give feedback': 'משוב'
   };
 
   for (var k in SEED_DICT) {
@@ -90,17 +154,17 @@
     }
   }
 
-  // Elements to NEVER touch
-  var EXCLUDED_TAGS = {
+  // Tags whose internal text MUST NOT be translated (code, scripts, styles)
+  var EXCLUDED_TEXT_TAGS = {
     SCRIPT: 1, STYLE: 1, CODE: 1, PRE: 1, SVG: 1, PATH: 1,
-    TEXTAREA: 1, INPUT: 1, KBD: 1, NOSCRIPT: 1
+    NOSCRIPT: 1, KBD: 1
   };
 
-  // Check if an element or its ancestors should be excluded
-  function isExcluded(node) {
+  // Check if an element is strictly code or technical editor
+  function isCodeOrTechnical(node) {
     var cur = node.nodeType === 3 ? node.parentElement : node;
     while (cur && cur !== document.body && cur !== document.documentElement) {
-      if (EXCLUDED_TAGS[cur.tagName]) return true;
+      if (EXCLUDED_TEXT_TAGS[cur.tagName]) return true;
       if (cur.isContentEditable) return true;
       if (cur.getAttribute('translate') === 'no') return true;
 
@@ -109,8 +173,6 @@
         if (cls.indexOf('monaco-editor') !== -1 ||
             cls.indexOf('xterm') !== -1 ||
             cls.indexOf('terminal') !== -1 ||
-            cls.indexOf('codicon') !== -1 ||
-            cls.indexOf('font-mono') !== -1 ||
             cls.indexOf('code-block') !== -1) {
           return true;
         }
@@ -120,7 +182,7 @@
     return false;
   }
 
-  // Regex patterns to skip technical strings
+  // Regex patterns to skip non-translatable text
   var REGEX_HEBREW = /[\u0590-\u05FF]/;
   var REGEX_ONLY_SYMBOLS = /^[\s\d\p{P}\p{S}]+$/u;
   var REGEX_IS_PATH = /[\\\/]|\b[a-zA-Z]:\\|\.(?:js|ts|tsx|jsx|json|md|py|sh|bat|ps1|html|css|yml|yaml|exe|dll|zip)\b/i;
@@ -132,14 +194,14 @@
     var trimmed = text.trim();
     if (trimmed.length < 2) return false;
     if (REGEX_HEBREW.test(trimmed)) return false; // Already Hebrew
-    if (REGEX_ONLY_SYMBOLS.test(trimmed)) return false; // Only punctuation/numbers
-    if (REGEX_IS_PATH.test(trimmed)) return false; // File paths or filenames
-    if (REGEX_IS_TECH.test(trimmed)) return false; // Tech identifiers / URLs
-    if (REGEX_MODEL_ID.test(trimmed)) return false; // AI Model IDs
+    if (REGEX_ONLY_SYMBOLS.test(trimmed)) return false; // Only symbols/numbers
+    if (REGEX_IS_PATH.test(trimmed)) return false; // File paths
+    if (REGEX_IS_TECH.test(trimmed)) return false; // URLs / Identifiers
+    if (REGEX_MODEL_ID.test(trimmed)) return false; // Model IDs
     return true;
   }
 
-  // Batch queue for Google Translate API
+  // Translation Queue & Fetching Engine (Chrome Extension API + MyMemory Fallback)
   var queue = [];
   var pendingTexts = new Set();
   var batchTimer = null;
@@ -151,10 +213,9 @@
       return;
     }
     if (pendingTexts.has(text)) {
-      // Already requested, wait for next cycle
       setTimeout(function () {
         if (translationCache[text]) callback(translationCache[text]);
-      }, 500);
+      }, 400);
       return;
     }
 
@@ -162,7 +223,7 @@
     queue.push({ text: text, callback: callback });
 
     if (!batchTimer) {
-      batchTimer = setTimeout(processBatch, 250);
+      batchTimer = setTimeout(processBatch, 80);
     }
   }
 
@@ -170,7 +231,7 @@
     batchTimer = null;
     if (queue.length === 0) return;
 
-    var currentBatch = queue.splice(0, 30); // Max 30 items per batch
+    var currentBatch = queue.splice(0, 25);
     var textsToFetch = [];
     var batchMap = new Map();
 
@@ -183,54 +244,76 @@
       batchMap.get(item.text).push(item.callback);
     }
 
-    // Translate each phrase safely using Google Translate single endpoint
-    textsToFetch.forEach(function (text) {
-      var url = 'https://translate.googleapis.com/translate_a/single?client=gtx&sl=en&tl=iw&dt=t&q=' + encodeURIComponent(text);
-      fetch(url)
-        .then(function (res) {
-          if (!res.ok) throw new Error('status ' + res.status);
-          return res.json();
-        })
-        .then(function (data) {
-          if (data && data[0]) {
-            var translated = '';
-            for (var j = 0; j < data[0].length; j++) {
-              if (data[0][j][0]) translated += data[0][j][0];
+    function applyResult(orig, trans) {
+      if (trans && trans !== orig) {
+        translationCache[orig] = trans;
+        persistCache();
+        var cbs = batchMap.get(orig) || [];
+        cbs.forEach(function (cb) { cb(trans); });
+      }
+      pendingTexts.delete(orig);
+    }
+
+    textsToFetch.forEach(function (text, idx) {
+      setTimeout(function () {
+        // Primary: Google Translate Chrome Extension endpoint (Fast, unblocked, reliable)
+        var url1 = 'https://clients5.google.com/translate_a/t?client=dict-chrome-ex&sl=en&tl=iw&q=' + encodeURIComponent(text);
+        fetch(url1)
+          .then(function (res) {
+            if (!res.ok) throw new Error('status ' + res.status);
+            return res.json();
+          })
+          .then(function (data) {
+            var trans = (Array.isArray(data) && data[0]) ? data[0] : (typeof data === 'string' ? data : null);
+            if (trans && trans !== text) {
+              applyResult(text, trans);
+            } else {
+              throw new Error('empty');
             }
-            if (translated && translated !== text) {
-              translationCache[text] = translated;
-              persistCache();
-              var callbacks = batchMap.get(text) || [];
-              callbacks.forEach(function (cb) { cb(translated); });
-            }
-          }
-        })
-        .catch(function (err) {
-          // Graceful fallback: original text stays intact
-        })
-        .finally(function () {
-          pendingTexts.delete(text);
-        });
+          })
+          .catch(function () {
+            // Secondary Fallback: MyMemory API
+            var url2 = 'https://api.mymemory.translated.net/get?q=' + encodeURIComponent(text) + '&langpair=en|he';
+            fetch(url2)
+              .then(function (r) { return r.json(); })
+              .then(function (d) {
+                if (d && d.responseData && d.responseData.translatedText) {
+                  var trans2 = d.responseData.translatedText;
+                  if (trans2 && trans2 !== text && trans2.indexOf('MYMEMORY') === -1) {
+                    applyResult(text, trans2);
+                    return;
+                  }
+                }
+                pendingTexts.delete(text);
+              })
+              .catch(function () {
+                pendingTexts.delete(text);
+              });
+          });
+      }, idx * 40);
     });
   }
 
-  // React Virtual-DOM Safe text node translation
+  // Translate text node with React Virtual-DOM resilience
   var handledNodes = new WeakSet();
 
   function translateTextNode(node) {
     if (!isEnabled || handledNodes.has(node)) return;
-    if (isExcluded(node)) return;
+    if (isCodeOrTechnical(node)) return;
+
+    var parent = node.parentElement;
+    if (parent && (parent.tagName === 'INPUT' || parent.tagName === 'TEXTAREA')) return;
 
     var original = node.nodeValue;
     if (!shouldTranslate(original)) return;
 
-    handledNodes.add(node);
     var trimmed = original.trim();
 
     // Check instant cache
     if (translationCache[trimmed]) {
       var trans = translationCache[trimmed];
       node.nodeValue = original.replace(trimmed, trans);
+      handledNodes.add(node);
       return;
     }
 
@@ -238,13 +321,15 @@
     enqueueForTranslation(trimmed, function (translated) {
       if (node.isConnected) {
         node.nodeValue = original.replace(trimmed, translated);
+        handledNodes.add(node);
       }
     });
   }
 
-  // Translate attributes (placeholders, tooltips)
+  // Translate attributes (placeholders, tooltips, aria-labels) even on inputs
   function translateAttributes(el) {
-    if (!isEnabled || isExcluded(el)) return;
+    if (!isEnabled) return;
+    if (isCodeOrTechnical(el)) return;
 
     var attrs = ['placeholder', 'title', 'aria-label'];
     for (var i = 0; i < attrs.length; i++) {
@@ -269,7 +354,7 @@
 
   // Walk DOM tree safely
   function walk(node) {
-    if (!node || isExcluded(node)) return;
+    if (!node || isCodeOrTechnical(node)) return;
 
     if (node.nodeType === 3) {
       translateTextNode(node);
@@ -286,7 +371,7 @@
     }
   }
 
-  // MutationObserver with strict debounce to prevent CPU strain
+  // MutationObserver for dynamic React DOM changes & modal popups
   var observer = null;
   function startObserver() {
     if (observer) return;
@@ -338,7 +423,6 @@
         localStorage.setItem(STORAGE_KEY_ENABLED, isEnabled ? '1' : '0');
       } catch (e) {}
       btn.textContent = isEnabled ? 'עברית' : 'EN';
-      // Reload UI cleanly so React mounts in chosen language
       window.location.reload();
     });
 
