@@ -39,6 +39,6 @@
 
 הורדה:
 - דף המהדורה בגיטהאב: https://github.com/Lev-Good/freebuff-rtl/releases/tag/v1.7.0
-- קובץ ZIP ישיר להורדה: https://github.com/Lev-Good/freebuff-rtl/archive/refs/tags/v1.7.0.zip
+- קובץ ZIP מוכן להורדה ישירה: https://github.com/Lev-Good/freebuff-rtl/releases/download/v1.7.0/Freebuff-Tools-Hub-v1.7.0.zip
 
 תיהנו, ואשמח כרגיל למשובים והצעות לשיפור!
