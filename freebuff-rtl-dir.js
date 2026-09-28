@@ -19,6 +19,7 @@
   } catch (e) {}
 
   function mount() {
+    if (window.__FREEBUFF_TOOLS_HUB__ || document.getElementById('freebuff-tools-hub-container')) return;
     var btn = document.createElement('button');
     btn.id = 'freebuff-dir-toggle';
     btn.title = rtl ? 'Switch to left-to-right' : 'Switch to right-to-left';

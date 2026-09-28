@@ -1,59 +1,48 @@
 <#
  ============================================================================
-  Freebuff Desktop — RTL patch engine (single source of truth)
+  Freebuff Desktop — RTL & Tools Patch Engine (single source of truth)
  ============================================================================
-  Applies (or reverts) the three changes that make Freebuff right-to-left:
+  Applies (or reverts) the comprehensive enhancements for Freebuff:
+    1. RTL Stylesheet (freebuff-rtl.css) & Drag Direction Fix (freebuff-rtl-dragfix.js)
+    2. Unified Tools Hub (freebuff-tools-hub.js) - in-app single settings menu
+    3. Hebrew Auto-Translation Engine (freebuff-auto-translate.js)
+    4. Ad Blocker in orchestrator.js (removes disruptive chat ads)
+    5. In-app updater notifier & update management (app-update.yml)
 
-    1. Appends freebuff-rtl.css to the stylesheet the app actually serves
-       (found via index.html, not guessed) — updates an older RTL sheet in
-       place, keeps a .pre-rtl.bak backup of the pristine file.
-    2. Adds dir="rtl" to the <html> tag in index.html — every rule in the
-       sheet is gated on html[dir="rtl"], so without this the CSS stays inert.
-    3. Injects freebuff-rtl-dragfix.js into index.html — reverses the
-       explorer resize drag direction, which the app hard-codes for LTR.
-
-  Idempotent: running it again is a no-op. Safe to call from the .bat
-  installers, the DevTools launcher, and the auto-patch keeper.
-
-  Usage:
-    powershell -File freebuff-rtl-patch.ps1            # auto-detect install
-    powershell -File freebuff-rtl-patch.ps1 -InstallRoot "C:\path\to\@codebufffreebuff-desktop"
-    powershell -File freebuff-rtl-patch.ps1 -CssDir "C:\...\ui\assets"   # legacy arg
-    powershell -File freebuff-rtl-patch.ps1 -Revert   # uninstall the patch
-
-  Note: light/dark mode is built into Freebuff now, so the engine no longer
-  installs a toggle — instead, applying (or reverting) also strips any
-  light-mode artifacts a previous version of this script left behind.
+  Idempotent: safe to run repeatedly.
  ============================================================================
 #>
 [CmdletBinding()]
 param(
   [string]$InstallRoot = '',
   [string]$CssDir = '',
+  [switch]$NoRtl,
+  [switch]$NoTranslate,
+  [switch]$NoAdsBlock,
+  [switch]$BlockUpdates,
+  [switch]$AllowUpdates,
   [switch]$Revert,
   [switch]$Quiet
 )
 
 $ErrorActionPreference = 'Stop'
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
-$sheetFile = Join-Path $scriptDir 'freebuff-rtl.css'
-$shimFile  = Join-Path $scriptDir 'freebuff-rtl-dragfix.js'
-$dirJsFile = Join-Path $scriptDir 'freebuff-rtl-dir.js'
-$updaterJsFile = Join-Path $scriptDir 'freebuff-rtl-updater.js'
-$versionFile   = Join-Path $scriptDir 'VERSION'
-$marker    = '/* ==== freebuff-rtl ==== */'
-# Light/dark mode is built into Freebuff now. The marker below is kept only
-# so the engine can detect and strip a light-mode block that a previous
-# version of this script installed.
-$lightMarker  = '/* ==== freebuff-light ==== */'
+
+$sheetFile        = Join-Path $scriptDir 'freebuff-rtl.css'
+$shimFile         = Join-Path $scriptDir 'freebuff-rtl-dragfix.js'
+$dirJsFile        = Join-Path $scriptDir 'freebuff-rtl-dir.js'
+$toolsHubJsFile   = Join-Path $scriptDir 'freebuff-tools-hub.js'
+$translateJsFile  = Join-Path $scriptDir 'freebuff-auto-translate.js'
+$updaterJsFile    = Join-Path $scriptDir 'freebuff-rtl-updater.js'
+$versionFile      = Join-Path $scriptDir 'VERSION'
+$marker           = '/* ==== freebuff-rtl ==== */'
+$lightMarker      = '/* ==== freebuff-light ==== */'
 
 function Write-Out($msg) {
-  if (-not $Quiet) { Write-Host "[Freebuff RTL] $msg" }
+  if (-not $Quiet) { Write-Host "[Freebuff Tools] $msg" }
 }
 
 function Resolve-Paths {
-  # Returns @{ Html = ...; Css = ... } or $null.
-  $htmlFile = $null
   $assetsDir = $null
 
   if ($CssDir) {
@@ -79,15 +68,15 @@ function Resolve-Paths {
     return $null
   }
 
-  $htmlFile = Join-Path (Split-Path -Parent $assetsDir) 'index.html'
+  $uiDir = Split-Path -Parent $assetsDir
+  $htmlFile = Join-Path $uiDir 'index.html'
+  $orchFile = Join-Path (Split-Path -Parent $uiDir) 'orchestrator.js'
+  $updateYml = Join-Path (Split-Path -Parent (Split-Path -Parent $uiDir)) 'app-update.yml'
 
-  # Find the CSS file the app actually loads — from index.html, else glob.
+  # Find the CSS file the app actually loads
   $cssFile = $null
   if (Test-Path -LiteralPath $htmlFile) {
     $htmlText = [IO.File]::ReadAllText($htmlFile)
-    # Vite changes the hash in the entry stylesheet on every Freebuff
-    # release (for example index-Dy5FFLXx.css). Accept both quote styles and
-    # optional whitespace so the new bootstrap HTML remains discoverable.
     $m = [regex]::Match($htmlText, '(?i)href\s*=\s*["'']([^"'']*index-[^"'']*\.css)["'']')
     if ($m.Success) {
       $ref = $m.Groups[1].Value.TrimStart('./').Replace('/', '\')
@@ -110,14 +99,16 @@ function Resolve-Paths {
   }
   if (-not $cssFile) { return $null }
 
-  return @{ Html = $htmlFile; Css = $cssFile; Assets = $assetsDir }
+  return @{
+    Html = $htmlFile
+    Css = $cssFile
+    Assets = $assetsDir
+    Orchestrator = $orchFile
+    UpdateYml = $updateYml
+  }
 }
 
 function Set-InjectedScript {
-  # Replaces (or inserts) the injected <script> block for $marker with the
-  # current contents of $file (or $Content when supplied). Older injected
-  # copies (e.g. from a previous drag-shim version) are swapped in place
-  # instead of being left stale. Returns the updated html.
   param([string]$Html, [string]$Marker, [string]$File, [string]$Content = '')
   if (-not $Content) { $Content = [IO.File]::ReadAllText($File) }
   $pattern = '(?is)<script[^>]*>\s*/\* ' + [regex]::Escape($Marker) + '.*?</script>'
@@ -127,10 +118,16 @@ function Set-InjectedScript {
   return [regex]::Replace($Html, '(?i)(<head[^>]*>)', { param($x) $x.Groups[1].Value + '<script>' + $Content + '</script>' })
 }
 
+function Remove-InjectedScript {
+  param([string]$Html, [string]$Marker)
+  $pattern = '(?is)<script[^>]*>\s*/\* ' + [regex]::Escape($Marker) + '.*?</script>'
+  if ($Html -match $pattern) {
+    return [regex]::Replace($Html, $pattern, '')
+  }
+  return $Html
+}
+
 function Get-UpdaterScript {
-  # Reads freebuff-rtl-updater.js and bakes the current VERSION file into it,
-  # so the version the in-app notifier compares against always matches the
-  # release it shipped with.
   if (-not (Test-Path -LiteralPath $updaterJsFile)) { return '' }
   $version = '0.0.0'
   if (Test-Path -LiteralPath $versionFile) {
@@ -139,202 +136,245 @@ function Get-UpdaterScript {
   return ([IO.File]::ReadAllText($updaterJsFile)) -replace '__VERSION__', $version
 }
 
+function Patch-AdBlocking($orchFile) {
+  if (-not (Test-Path -LiteralPath $orchFile)) { return }
+  $content = [IO.File]::ReadAllText($orchFile)
+  $original = $content
+  $bak = $orchFile + '.bak'
+  if (-not (Test-Path -LiteralPath $bak)) {
+    Copy-Item -LiteralPath $orchFile -Destination $bak -Force
+  }
+
+  $methods = @('breakAd', 'partnerAd', 'intermissionAd', 'inlineAd', 'agenticOffer')
+  foreach ($m in $methods) {
+    $pattern = "(?s)(async\s+$m\s*\([^)]*\)\s*\{)(?!\s*return\s+null;)"
+    if ($content -match $pattern) {
+      $content = [regex]::Replace($content, $pattern, '$1 return null;')
+    }
+  }
+
+  if ($content -ne $original) {
+    [IO.File]::WriteAllText($orchFile, $content)
+    Write-Out "Ad-blocking patched in orchestrator.js."
+  } else {
+    Write-Out "Ad-blocking already active in orchestrator.js."
+  }
+}
+
+function Restore-AdBlocking($orchFile) {
+  $bak = $orchFile + '.bak'
+  if (Test-Path -LiteralPath $bak) {
+    Copy-Item -LiteralPath $bak -Destination $orchFile -Force
+    Write-Out "orchestrator.js restored from backup (ad-blocking removed)."
+  }
+}
+
+function Set-UpdateBlocking($ymlFile, [bool]$block) {
+  if (-not (Test-Path -LiteralPath $ymlFile)) { return }
+  $text = [IO.File]::ReadAllText($ymlFile)
+  if ($block) {
+    $newText = $text -replace 'url:\s*https?://[^\r\n]+', 'url: http://127.0.0.1:0/'
+    if ($newText -ne $text) {
+      [IO.File]::WriteAllText($ymlFile, $newText)
+      Write-Out "Auto-updates disabled in app-update.yml."
+    }
+  } else {
+    $newText = $text -replace 'url:\s*http://127\.0\.0\.1:0/', 'url: https://update.codebuff.com/'
+    if ($newText -ne $text) {
+      [IO.File]::WriteAllText($ymlFile, $newText)
+      Write-Out "Auto-updates enabled/restored in app-update.yml."
+    }
+  }
+}
+
 function Invoke-Apply {
   $paths = Resolve-Paths
   if (-not $paths) {
-    Write-Out "Could not find the Freebuff UI files. Pass -InstallRoot or -CssDir."
+    Write-Out "Could not find Freebuff UI files. Pass -InstallRoot or -CssDir."
     exit 1
   }
   $htmlFile = $paths.Html
   $cssFile  = $paths.Css
-
-  # --- 1) CSS: strip any leftover light-mode block, then apply RTL -----------
-  if (-not (Test-Path -LiteralPath $sheetFile)) { Write-Out "Missing $sheetFile"; exit 1 }
-  $sheet = [IO.File]::ReadAllText($sheetFile)
-  $css   = [IO.File]::ReadAllText($cssFile)
-
-  # Light/dark mode is built into Freebuff now - remove the old palette block
-  # from a previous install before touching the RTL block.
-  $lightAt = $css.IndexOf($lightMarker)
-  if ($lightAt -ge 0) {
-    $css = $css.Substring(0, $lightAt)
-    [IO.File]::WriteAllText($cssFile, $css)
-    Write-Out 'CSS: removed the old light-mode palette (built into Freebuff now).'
-  }
-
-  $i = $css.IndexOf($marker)
-  if ($i -lt 0) {
-    Copy-Item -LiteralPath $cssFile -Destination ($cssFile + '.pre-rtl.bak') -Force
-    [IO.File]::WriteAllText($cssFile, $css + $sheet)
-    Write-Out "CSS patched: $([IO.Path]::GetFileName($cssFile))"
-  } elseif ($css.Substring($i) -ne $sheet) {
-    if (-not (Test-Path -LiteralPath ($cssFile + '.pre-rtl.bak'))) {
-      Copy-Item -LiteralPath $cssFile -Destination ($cssFile + '.pre-rtl.bak') -Force
-    }
-    [IO.File]::WriteAllText($cssFile, $css.Substring(0, $i) + $sheet)
-    Write-Out 'CSS updated to the latest RTL sheet.'
-  } else {
-    Write-Out 'CSS already up to date.'
-  }
-
-  # --- 2 + 3) index.html: dir="rtl" + drag shim ----------------------------
-  if (-not (Test-Path -LiteralPath $htmlFile)) {
-    Write-Out "WARNING: $htmlFile not found - dir=rtl and drag shim were NOT set. RTL will NOT work."
-    exit 1
-  }
-  if (-not (Test-Path -LiteralPath $shimFile)) { Write-Out "Missing $shimFile"; exit 1 }
-  if (-not (Test-Path -LiteralPath $dirJsFile)) { Write-Out "Missing $dirJsFile"; exit 1 }
   $html = [IO.File]::ReadAllText($htmlFile)
-  $changed = $false
+  $changedHtml = $false
 
-  $m = [regex]::Match($html, '(?is)<html[^>]*>')
-  if ($m.Success) {
-    if ($m.Value -match '(?i)\sdir\s*=') {
-      # Newer builds may ship an explicit dir="ltr" attribute. Replacing it
-      # is essential: merely detecting that an attribute exists leaves the
-      # RTL stylesheet gated off and makes the whole UI look LTR.
-      $newTag = [regex]::Replace($m.Value, '(?i)\sdir\s*=\s*(?:"[^"]*"|''[^'']*'')', ' dir="rtl"')
-      if ($newTag -ne $m.Value) {
-        $html = $html.Remove($m.Index, $m.Length).Insert($m.Index, $newTag)
-        Write-Out 'dir was reset to "rtl" on the html tag.'
-        $changed = $true
-      } else {
-        Write-Out 'dir already set to rtl.'
+  # --- 1) RTL Stylesheet & Drag fix ---
+  if (-not $NoRtl) {
+    if (Test-Path -LiteralPath $sheetFile) {
+      $sheet = [IO.File]::ReadAllText($sheetFile)
+      $css   = [IO.File]::ReadAllText($cssFile)
+
+      $lightAt = $css.IndexOf($lightMarker)
+      if ($lightAt -ge 0) {
+        $css = $css.Substring(0, $lightAt)
+        [IO.File]::WriteAllText($cssFile, $css)
+        Write-Out 'CSS: removed old light-mode block.'
       }
-    } else {
-      $newTag = $m.Value -replace '<html', '<html dir="rtl"'
-      $html = $html.Remove($m.Index, $m.Length).Insert($m.Index, $newTag)
-      Write-Out 'dir="rtl" added to the html tag.'
-      $changed = $true
+
+      $i = $css.IndexOf($marker)
+      if ($i -lt 0) {
+        Copy-Item -LiteralPath $cssFile -Destination ($cssFile + '.pre-rtl.bak') -Force
+        [IO.File]::WriteAllText($cssFile, $css + $sheet)
+        Write-Out "CSS patched: $([IO.Path]::GetFileName($cssFile))"
+      } elseif ($css.Substring($i) -ne $sheet) {
+        if (-not (Test-Path -LiteralPath ($cssFile + '.pre-rtl.bak'))) {
+          Copy-Item -LiteralPath $cssFile -Destination ($cssFile + '.pre-rtl.bak') -Force
+        }
+        [IO.File]::WriteAllText($cssFile, $css.Substring(0, $i) + $sheet)
+        Write-Out 'CSS updated to latest RTL sheet.'
+      } else {
+        Write-Out 'CSS already up to date.'
+      }
+    }
+
+    # Set dir="rtl" on html tag
+    $m = [regex]::Match($html, '(?is)<html[^>]*>')
+    if ($m.Success) {
+      if ($m.Value -match '(?i)\sdir\s*=') {
+        $newTag = [regex]::Replace($m.Value, '(?i)\sdir\s*=\s*(?:"[^"]*"|''[^'']*'')', ' dir="rtl"')
+        if ($newTag -ne $m.Value) {
+          $html = $html.Remove($m.Index, $m.Length).Insert($m.Index, $newTag)
+          Write-Out 'dir attribute set to "rtl".'
+          $changedHtml = $true
+        }
+      } else {
+        $newTag = $m.Value -replace '<html', '<html dir="rtl"'
+        $html = $html.Remove($m.Index, $m.Length).Insert($m.Index, $newTag)
+        Write-Out 'dir="rtl" added to html tag.'
+        $changedHtml = $true
+      }
+    }
+
+    if (Test-Path -LiteralPath $shimFile) {
+      $before = $html
+      $html = Set-InjectedScript $html 'freebuff-rtl-dragfix' $shimFile
+      if ($html -ne $before) { Write-Out 'Drag-direction shim injected.'; $changedHtml = $true }
     }
   }
 
-  $before = $html
-  $html = Set-InjectedScript $html 'freebuff-rtl-dragfix' $shimFile
-  if ($html -ne $before) {
-    Write-Out 'Drag-direction shim injected/updated in index.html.'
-    $changed = $true
-  } else {
-    Write-Out 'Drag-direction shim already up to date.'
+  # --- 2) Unified Tools Hub or Direction button ---
+  if (Test-Path -LiteralPath $toolsHubJsFile) {
+    $before = $html
+    # Strip standalone direction toggle if tools hub is installed
+    $html = Remove-InjectedScript $html 'freebuff-rtl-dir'
+    $html = Set-InjectedScript $html 'freebuff-tools-hub' $toolsHubJsFile
+    if ($html -ne $before) { Write-Out 'Freebuff Tools Hub injected.'; $changedHtml = $true }
+  } elseif (Test-Path -LiteralPath $dirJsFile) {
+    $before = $html
+    $html = Set-InjectedScript $html 'freebuff-rtl-dir' $dirJsFile
+    if ($html -ne $before) { Write-Out 'RTL direction toggle injected.'; $changedHtml = $true }
   }
 
-  $before = $html
-  $html = Set-InjectedScript $html 'freebuff-rtl-dir' $dirJsFile
-  if ($html -ne $before) {
-    Write-Out 'RTL/LTR direction toggle injected/updated in index.html.'
-    $changed = $true
-  } else {
-    Write-Out 'RTL/LTR direction toggle already up to date.'
+  # --- 3) Auto-translation engine ---
+  if (-not $NoTranslate -and (Test-Path -LiteralPath $translateJsFile)) {
+    $before = $html
+    # Remove any old <script src="./freebuff-auto-translate.js"></script> tag if present
+    $html = $html -replace '(?i)<script\s+src=["'']\.\/freebuff-auto-translate\.js["'']><\/script>', ''
+    $html = Set-InjectedScript $html 'freebuff-auto-translate' $translateJsFile
+    if ($html -ne $before) { Write-Out 'Hebrew auto-translation engine injected.'; $changedHtml = $true }
   }
 
-  $before = $html
+  # --- 4) Updater notifier ---
   $updaterJs = Get-UpdaterScript
   if ($updaterJs) {
+    $before = $html
     $html = Set-InjectedScript $html 'freebuff-rtl-updater' $updaterJsFile $updaterJs
-    if ($html -ne $before) {
-      Write-Out 'Update notifier injected/updated in index.html.'
-      $changed = $true
-    } else {
-      Write-Out 'Update notifier already up to date.'
-    }
-  } else {
-    Write-Out "WARNING: $updaterJsFile missing - update notifier NOT injected."
+    if ($html -ne $before) { Write-Out 'Update notifier injected.'; $changedHtml = $true }
   }
 
-  # Strip the old light-mode toggle script from a previous install - light/
-  # dark mode is built into Freebuff now.
+  # Clean old light-mode leftovers
   if ($html -match 'freebuff-light') {
     $html = [regex]::Replace($html, '(?is)<script[^>]*>\s*/\* freebuff-light.*?</script>', '')
-    Write-Out 'HTML: removed the old light-mode toggle (built into Freebuff now).'
-    $changed = $true
+    $changedHtml = $true
   }
 
-  if ($changed) { [IO.File]::WriteAllText($htmlFile, $html) }
-  Write-Out 'Done. Restart Freebuff - the chat is now right-to-left.'
+  if ($changedHtml) {
+    [IO.File]::WriteAllText($htmlFile, $html)
+    Write-Out 'HTML file updated successfully.'
+  }
+
+  # --- 5) Ad blocking in orchestrator.js ---
+  if (-not $NoAdsBlock -and (Test-Path -LiteralPath $paths.Orchestrator)) {
+    Patch-AdBlocking $paths.Orchestrator
+  }
+
+  # --- 6) Auto-updates blocking ---
+  if ($BlockUpdates -and (Test-Path -LiteralPath $paths.UpdateYml)) {
+    Set-UpdateBlocking $paths.UpdateYml $true
+  } elseif ($AllowUpdates -and (Test-Path -LiteralPath $paths.UpdateYml)) {
+    Set-UpdateBlocking $paths.UpdateYml $false
+  }
+
+  Write-Out 'Patch complete! Restart Freebuff to apply all changes.'
   exit 0
 }
 
 function Invoke-Revert {
   $paths = Resolve-Paths
   if (-not $paths) {
-    Write-Out "Could not find the Freebuff UI files. Pass -InstallRoot or -CssDir."
+    Write-Out "Could not find Freebuff UI files."
     exit 1
   }
   $htmlFile = $paths.Html
   $cssFile  = $paths.Css
 
-  # --- 1) strip the light-mode and RTL blocks from the CSS ---
-  $css = [IO.File]::ReadAllText($cssFile)
-  $changedCss = $false
-  $lightAt = $css.IndexOf($lightMarker)
-  if ($lightAt -ge 0) {
-    $css = $css.Substring(0, $lightAt)
-    $changedCss = $true
-    Write-Out 'CSS: light-mode block removed.'
-  } else {
-    Write-Out 'CSS: no light-mode block - nothing to remove.'
+  # --- 1) Strip CSS blocks ---
+  if (Test-Path -LiteralPath $cssFile) {
+    $css = [IO.File]::ReadAllText($cssFile)
+    $changedCss = $false
+    $i = $css.IndexOf($marker)
+    if ($i -ge 0) {
+      $css = $css.Substring(0, $i)
+      $changedCss = $true
+      Write-Out 'CSS: RTL block removed.'
+    }
+    $lightAt = $css.IndexOf($lightMarker)
+    if ($lightAt -ge 0) {
+      $css = $css.Substring(0, $lightAt)
+      $changedCss = $true
+      Write-Out 'CSS: light-mode block removed.'
+    }
+    if ($changedCss) { [IO.File]::WriteAllText($cssFile, $css) }
   }
-  $i = $css.IndexOf($marker)
-  if ($i -lt 0) {
-    Write-Out 'CSS: RTL was not applied - nothing to remove.'
-  } else {
-    $css = $css.Substring(0, $i)
-    $changedCss = $true
-    Write-Out 'CSS: RTL block removed.'
-  }
-  if ($changedCss) { [IO.File]::WriteAllText($cssFile, $css) }
 
-  # --- 2) remove the drag shim + dir from index.html ---
+  # --- 2) Remove injected scripts from index.html ---
   if (Test-Path -LiteralPath $htmlFile) {
     $html = [IO.File]::ReadAllText($htmlFile)
-    $changed = $false
-    if ($html -match 'freebuff-rtl-dragfix') {
-      $html = [regex]::Replace($html, '(?is)<script[^>]*>\s*/\* freebuff-rtl-dragfix.*?</script>', '')
-      Write-Out 'HTML: drag shim removed.'
-      $changed = $true
-    } else {
-      Write-Out 'HTML: no drag shim - nothing to remove.'
-    }
-    if ($html -match 'freebuff-rtl-dir') {
-      $html = [regex]::Replace($html, '(?is)<script[^>]*>\s*/\* freebuff-rtl-dir.*?</script>', '')
-      Write-Out 'HTML: direction toggle removed.'
-      $changed = $true
-    } else {
-      Write-Out 'HTML: no direction toggle - nothing to remove.'
-    }
-    if ($html -match 'freebuff-rtl-updater') {
-      $html = [regex]::Replace($html, '(?is)<script[^>]*>\s*/\* freebuff-rtl-updater.*?</script>', '')
-      Write-Out 'HTML: update notifier removed.'
-      $changed = $true
-    } else {
-      Write-Out 'HTML: no update notifier - nothing to remove.'
-    }
-    if ($html -match 'freebuff-light') {
-      $html = [regex]::Replace($html, '(?is)<script[^>]*>\s*/\* freebuff-light.*?</script>', '')
-      Write-Out 'HTML: light-mode toggle removed.'
-      $changed = $true
-    } else {
-      Write-Out 'HTML: no light-mode toggle - nothing to remove.'
-    }
+    $before = $html
+
+    $html = Remove-InjectedScript $html 'freebuff-tools-hub'
+    $html = Remove-InjectedScript $html 'freebuff-auto-translate'
+    $html = Remove-InjectedScript $html 'freebuff-rtl-dragfix'
+    $html = Remove-InjectedScript $html 'freebuff-rtl-dir'
+    $html = Remove-InjectedScript $html 'freebuff-rtl-updater'
+    $html = Remove-InjectedScript $html 'freebuff-light'
+    $html = $html -replace '(?i)<script\s+src=["'']\.\/freebuff-auto-translate\.js["'']><\/script>', ''
+
     $m = [regex]::Match($html, '(?is)<html[^>]*>')
     if ($m.Success) {
       $newTag = $m.Value -replace '\sdir="[^"]*"', ''
       if ($newTag -ne $m.Value) {
         $html = $html.Remove($m.Index, $m.Length).Insert($m.Index, $newTag)
-        Write-Out 'HTML: dir removed from the html tag.'
-        $changed = $true
-      } else {
-        Write-Out 'HTML: no dir attribute - nothing to do.'
       }
-    } else {
-      Write-Out 'HTML: no html tag found - nothing to do.'
     }
-    if ($changed) { [IO.File]::WriteAllText($htmlFile, $html) }
-  } else {
-    Write-Out "HTML: $htmlFile not found - skipped."
+
+    if ($html -ne $before) {
+      [IO.File]::WriteAllText($htmlFile, $html)
+      Write-Out 'HTML: restored to original state.'
+    }
   }
 
-  Write-Out 'Done. Restart Freebuff - the layout is back to normal.'
+  # --- 3) Restore ad-blocking in orchestrator.js ---
+  if (Test-Path -LiteralPath $paths.Orchestrator) {
+    Restore-AdBlocking $paths.Orchestrator
+  }
+
+  # --- 4) Restore app-update.yml ---
+  if (Test-Path -LiteralPath $paths.UpdateYml) {
+    Set-UpdateBlocking $paths.UpdateYml $false
+  }
+
+  Write-Out 'Revert complete. Freebuff is back to factory state.'
   exit 0
 }
 

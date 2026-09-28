@@ -68,7 +68,7 @@ if (-not [string]::Equals(
     # download folder. File APIs handle Unicode here; only child process
     # command lines need the encoded-command workaround below.
     $releaseFiles = Get-ChildItem -LiteralPath $sourceDir -File -ErrorAction Stop | Where-Object {
-      $_.Name -match '^(freebuff-rtl|apply-rtl|remove-rtl|remove-permanent|install-permanent|VERSION|README|פוסט-)'
+      $_.Name -match '^(freebuff-|apply-|remove-|install-|Setup-|VERSION|README|פוסט-)'
     }
     foreach ($file in $releaseFiles) {
       Copy-Item -LiteralPath $file.FullName -Destination (Join-Path $stableDir $file.Name) -Force
@@ -285,7 +285,27 @@ function Consume-RestartMarkers {
   foreach ($m in $markers) {
     try {
       $json = $m | Get-Content -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
-      if ($json.freebuffRtlRestart -eq $true) {
+      if ($json.freebuffAction -eq 'set-updates') {
+        $updateYml = (Join-Path $scriptDir '..\..\resources\app-update.yml')
+        $candidates = @(
+          (Join-Path $env:LOCALAPPDATA 'Programs\@codebufffreebuff-desktop\resources\app-update.yml'),
+          (Join-Path $env:ProgramFiles '@codebufffreebuff-desktop\resources\app-update.yml'),
+          (Join-Path ${env:ProgramFiles(x86)} '@codebufffreebuff-desktop\resources\app-update.yml')
+        )
+        $targetYml = $candidates | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+        if ($targetYml) {
+          $ymlContent = [IO.File]::ReadAllText($targetYml)
+          if ($json.disableUpdates -eq $true) {
+            $ymlContent = $ymlContent -replace 'url:\s*https?://[^\r\n]+', 'url: http://127.0.0.1:0/'
+            Write-Log "updates disabled in $targetYml"
+          } else {
+            $ymlContent = $ymlContent -replace 'url:\s*http://127\.0\.0\.1:0/', 'url: https://update.codebuff.com/'
+            Write-Log "updates enabled/restored in $targetYml"
+          }
+          [IO.File]::WriteAllText($targetYml, $ymlContent)
+        }
+      }
+      elseif ($json.freebuffRtlRestart -eq $true) {
         $age = ((Get-Date) - $m.LastWriteTime).TotalSeconds
         if ($age -gt $MarkerMaxAgeSec) {
           Write-Log "restart marker is stale ($([int]$age)s) - ignoring"
